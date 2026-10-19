@@ -122,7 +122,7 @@ static const char *item_name(int i) {
     case IT_FOLDERS: return UI_T("Open folders", "Pastas liberadas");
     case IT_MODE: return UI_T("Mode", "Modo");
     case IT_PAIR: return UI_T("Pair a device", "Parear dispositivo");
-    case IT_WEB: return UI_T("Web page", "Pagina web");
+    case IT_WEB: return UI_T("Web page", "Página web");
     case IT_PAIRED: return UI_T("Paired devices", "Dispositivos pareados");
     case IT_LOG: return UI_T("Activity log", "Log de atividade");
     default: return UI_T("Exit", "Sair");
@@ -218,34 +218,34 @@ static void draw_top(const ui_model *m) {
   if (m->net == 3) {
     ui_text(12, 56, 0.45f, COL_WHITE, 0, "IP  %s:%u", m->ip, m->port);
     if (m->web_up) ui_text(12, 72, 0.45f, COL_GREEN, 0, "http://%s:%u", m->ip, m->web_port);
-    else ui_text(12, 72, 0.45f, COL_DIM, 0, "%s", m->web_on ? UI_T("web page starting...", "pagina web iniciando...") : UI_T("web page off", "pagina web desligada"));
+    else ui_text(12, 72, 0.45f, COL_DIM, 0, "%s", m->web_on ? UI_T("web page starting...", "página web iniciando...") : UI_T("web page off", "página web desligada"));
   } else if (m->err && m->err[0]) {
     ui_text(12, 56, 0.45f, COL_RED, 0, "%.60s", m->err);
   }
   ui_text(12, 92, 0.45f, m->read_only ? COL_GREEN : COL_YELLOW, 0, "%s: %s", UI_T("Mode", "Modo"),
           m->read_only ? UI_T("READ-ONLY", "SOMENTE LEITURA") : UI_T("DEVELOPMENT (writes on)", "DESENVOLVIMENTO (escrita ligada)"));
-  if (m->whole_sd) ui_text(12, 108, 0.45f, COL_RED, 0, "%s", UI_T("WHOLE SD CARD OPEN", "CARTAO SD INTEIRO ABERTO"));
+  if (m->whole_sd) ui_text(12, 108, 0.45f, COL_RED, 0, "%s", UI_T("WHOLE SD CARD OPEN", "CARTÃO SD INTEIRO ABERTO"));
   else ui_text(12, 108, 0.45f, COL_DIM, 0, "%s: %d (%d %s)", UI_T("Open folders", "Pastas"), m->open_folders, m->writable_folders, UI_T("writable", "com escrita"));
   if (m->bridge_peer && m->bridge_peer[0]) ui_text(12, 124, 0.45f, COL_GREEN, 0, "Bridge: %s", m->bridge_peer);
   if (m->web_peer && m->web_peer[0]) ui_text(12, 140, 0.45f, COL_GREEN, 0, "%s: %s", UI_T("Browser", "Navegador"), m->web_peer);
 
   if (m->pairing == 2) {
-    ui_text(200, 150, 0.45f, COL_YELLOW, UI_CENTER, "%s", UI_T("PAIRING REQUEST - same number on the page?", "PEDIDO DE PAREAMENTO - mesmo numero na pagina?"));
+    ui_text(200, 150, 0.45f, COL_YELLOW, UI_CENTER, "%s", UI_T("PAIRING REQUEST - same number on the page?", "PEDIDO DE PAREAMENTO - mesmo número na página?"));
     ui_text(200, 164, 1.1f, COL_CYAN, UI_CENTER, "%03u %03u", m->sas / 1000u, m->sas % 1000u);
     ui_text(200, 200, 0.4f, COL_DIM, UI_CENTER, "%.30s  (%.20s)", m->p2_label, m->p2_peer);
   } else if (m->pairing == 1) {
     ui_text(200, 156, 0.5f, COL_YELLOW, UI_CENTER, "%s (%lu s)", UI_T("PAIRING OPEN", "PAREAMENTO ABERTO"), (unsigned long)m->left_s);
-    ui_text(200, 174, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("On the page click Pair, or: ndev pair <ip>", "Na pagina clique em Parear, ou: ndev pair <ip>"));
-    ui_text(200, 190, 0.5f, COL_CYAN, UI_CENTER, "%s: %s", UI_T("code", "codigo"), m->code);
+    ui_text(200, 174, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("On the page click Pair, or: ndev pair <ip>", "Na página, clique em Parear, ou: ndev pair <ip>"));
+    ui_text(200, 190, 0.5f, COL_CYAN, UI_CENTER, "%s: %s", UI_T("code", "código"), m->code);
   } else if (m->forget_armed) {
     ui_text(200, 170, 0.5f, COL_RED, UI_CENTER, "%s", UI_T("Select it again to forget ALL paired devices", "Selecione de novo para esquecer TODOS os dispositivos"));
   }
 
   ui_rect(0, 220, 400, 20, COL_BAR);
-  ui_text(8, 223, 0.4f, COL_WHITE, 0, "%s: %lu    %s: %lu", UI_T("Requests", "Requisicoes"), m->requests,
-          UI_T("Uptime", "Ativo"), m->uptime_s / 60);
+  ui_text(8, 223, 0.4f, COL_WHITE, 0, "%s: %lu    %s: %lu", UI_T("Requests", "Requisições"), m->requests,
+          UI_T("Uptime", "Ativo (min)"), m->uptime_s / 60);
   ui_text(392, 223, 0.4f, COL_WHITE, UI_RIGHT, "%.60s", alog_get(0) ? alog_get(0) : "");
-  if (m->keys_warn) ui_text(200, 204, 0.45f, COL_RED, UI_CENTER, "%s", UI_T("Pairing not saved (SD error)", "Pareamento nao salvo (erro no SD)"));
+  if (m->keys_warn) ui_text(200, 204, 0.45f, COL_RED, UI_CENTER, "%s", UI_T("Pairing not saved (SD error)", "Pareamento não salvo (erro no SD)"));
 }
 
 static void draw_menu(const ui_model *m) {
@@ -277,12 +277,12 @@ static void draw_menu(const ui_model *m) {
   if (m->pairing == 2) {
     ui_rect(0, 100, 320, 120, COL_BOT_BG);
     ui_rect(0, 100, 320, 2, COL_BAR);
-    ui_text(160, 108, 0.5f, COL_INK, UI_CENTER, "%s", UI_T("Same number on the page?", "Mesmo numero na pagina?"));
+    ui_text(160, 108, 0.5f, COL_INK, UI_CENTER, "%s", UI_T("Same number on the page?", "Mesmo número na página?"));
     ui_text(160, 126, 0.9f, COL_INK, UI_CENTER, "%03u %03u", m->sas / 1000u, m->sas % 1000u);
     ui_rect(10, 160, 140, 40, UI_RGB(0x4c, 0xaf, 0x50));
     ui_text(80, 169, 0.55f, COL_WHITE, UI_CENTER, "A: %s", UI_T("Yes, pair", "Sim, parear"));
     ui_rect(170, 160, 140, 40, UI_RGB(0xe5, 0x39, 0x35));
-    ui_text(240, 169, 0.55f, COL_WHITE, UI_CENTER, "B: %s", UI_T("No", "Nao"));
+    ui_text(240, 169, 0.55f, COL_WHITE, UI_CENTER, "B: %s", UI_T("No", "Não"));
     if (m->p2_replaces && m->p2_replaces[0]) ui_text(160, 202, 0.38f, COL_INK, UI_CENTER, "%s \"%.24s\"", UI_T("replaces", "substitui"), m->p2_replaces);
   }
 }

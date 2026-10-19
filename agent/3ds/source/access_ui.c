@@ -239,10 +239,10 @@ void access_ui_draw(PrintConsole *top, PrintConsole *bottom) {
   ui_text(12, 36, 0.5f, UI_RGB(0xff, 0xff, 0xff), 0, "%.52s", g.path);
   ui_text(12, 70, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "[R] %s    [RW] %s", UI_T("read", "leitura"), UI_T("read + write", "leitura e escrita"));
   ui_text(12, 86, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "(R) %s", UI_T("open through a parent folder", "aberta por uma pasta pai"));
-  ui_text(12, 102, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "! %s", UI_T("system folder: never writable", "pasta do sistema: nunca gravavel"));
-  ui_text(12, 128, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "%s", UI_T("Writes also need Development mode (X).", "Escrever tambem exige o modo Desenvolvimento (X)."));
-  ui_text(12, 144, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "%s", UI_T("The agent's own folder is always open.", "A pasta do proprio agente esta sempre aberta."));
-  if (g.skipped) ui_text(12, 168, 0.42f, UI_RGB(0xf0, 0x5a, 0x50), 0, "%d %s", g.skipped, UI_T("folder(s) not shown (too many / long name)", "pasta(s) nao exibida(s) (muitas / nome longo)"));
+  ui_text(12, 102, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "! %s", UI_T("system folder: never writable", "pasta do sistema: nunca gravável"));
+  ui_text(12, 128, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "%s", UI_T("Writes also need Development mode (X).", "Escrever também exige o modo Desenvolvimento (X)."));
+  ui_text(12, 144, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "%s", UI_T("The agent's own folder is always open.", "A pasta do próprio agente está sempre aberta."));
+  if (g.skipped) ui_text(12, 168, 0.42f, UI_RGB(0xf0, 0x5a, 0x50), 0, "%d %s", g.skipped, UI_T("folder(s) not shown (too many / long name)", "pasta(s) não exibida(s) (muitas / nome longo)"));
   if (g.msg[0]) ui_text(12, 190, 0.5f, g.msg_bad ? UI_RGB(0xf0, 0x5a, 0x50) : UI_RGB(0x6b, 0xd0, 0x6b), 0, "%.60s", g.msg);
   ui_rect(0, 220, 400, 20, UI_RGB(0x3f, 0x41, 0x47));
 
