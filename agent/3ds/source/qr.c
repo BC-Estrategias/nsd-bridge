@@ -157,7 +157,8 @@ bool qr_take(char *out, size_t cap) {
   return true;
 }
 
-/* The preview texture is tiled (8x8 Morton blocks) and upside down in GPU space: the top row of the image is the highest row. */
+/* The preview texture is tiled (8x8 Morton blocks). Memory row 0 is the top of the picture (v = 1): rows are copied as they
+ * come, the same way FBI does; flipping them here showed the camera upside down. */
 static void tile_frame(void) {
   static uint8_t morton[8][8];
   static bool ready;
@@ -173,7 +174,7 @@ static void tile_frame(void) {
     ready = true;
   }
   for (y = 0; y < H; y++) {
-    int ty = TEX_H - 1 - y; /* texture row, 0 = bottom */
+    int ty = y;
     const u16 *row = g_preview + y * W;
     for (x = 0; x < W; x++) {
       int tile = (ty >> 3) * (TEX_W >> 3) + (x >> 3);

@@ -968,7 +968,8 @@ int main(int argc, char **argv) {
         static unsigned last_ins_rev = 0;
         ins_status is;
         installer_get(&is);
-        if (is.revision != last_ins_rev) { last_ins_rev = is.revision; changed = true; draw_now = true; }
+        /* while installing, progress redraws follow the normal throttle: every redraw takes CPU from the download */
+        if (is.revision != last_ins_rev) { last_ins_rev = is.revision; changed = true; if (is.state != INS_INSTALLING) draw_now = true; }
       }
     }
 #endif
