@@ -131,6 +131,7 @@ static bool sink_finish(sink *k, const cia_info *ci) {
   if (g_have_expect && memcmp(digest, g_expect, 32) != 0) { sink_abort(k); fail(INS_E_HASH, 0); return false; }
   rc = AM_FinishCiaInstall(k->am);
   k->opened = false;
+  alog("Install: finish 0x%08lX, %llu bytes, sha256 %.16s...", (unsigned long)rc, (unsigned long long)k->off, g_st.sha_hex);
   if (R_FAILED(rc)) { fail(INS_E_AM, (uint32_t)rc); return false; }
   if (k->dest == MEDIATYPE_SD) AM_QueryAvailableExternalTitleDatabase(NULL);
   return true;
@@ -143,11 +144,32 @@ static bool enough_space(const cia_info *ci) {
   return R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&r)) && (uint64_t)r.freeClusters * r.clusterSize >= ci->total_size + SPACE_MARGIN;
 }
 
+/* Is this title installed? AM_GetTitleInfo answers for one title; the list is the fallback (and both are logged: this
+ * check decides whether the installed copy is removed first). */
+static int title_installed(FS_MediaType mt, u64 id, AM_TitleInfo *ti) {
+  Result r = AM_GetTitleInfo(mt, 1, &id, ti);
+  u32 count = 0, got = 0, i;
+  u64 *ids;
+  int found = 0;
+  if (R_SUCCEEDED(r)) return 1;
+  if (R_FAILED(AM_GetTitleCount(mt, &count)) || count == 0) {
+    alog("Install: AM_GetTitleInfo 0x%08lX, title count %lu", (unsigned long)r, (unsigned long)count);
+    return 0;
+  }
+  ids = malloc((size_t)count * sizeof *ids);
+  if (ids && R_SUCCEEDED(AM_GetTitleList(&got, mt, count, ids)))
+    for (i = 0; i < got; i++) if (ids[i] == id) { found = 1; break; }
+  free(ids);
+  alog("Install: AM_GetTitleInfo 0x%08lX; list of %lu titles says %s", (unsigned long)r, (unsigned long)got, found ? "installed" : "not installed");
+  return found;
+}
+
 /* Looks at what was read and either moves to CONFIRM or fails. `known_total` is the size the source reports (0 = unknown). */
 static bool judge(const uint8_t *buf, size_t n, uint64_t known_total) {
   cia_info ci;
   AM_TitleInfo ti;
   u64 id;
+  int replaces;
   int rc = cia_parse(buf, n, &ci);
   if (rc != 0) { fail(INS_E_NOT_CIA, 0); return false; }
   if (ci.cls == CIA_CLASS_FIRM) { fail(INS_E_FIRM, 0); return false; }
@@ -155,11 +177,15 @@ static bool judge(const uint8_t *buf, size_t n, uint64_t known_total) {
   if (known_total && known_total != ci.total_size) { fail(INS_E_SIZE, 0); return false; }
   if (!enough_space(&ci)) { fail(INS_E_SPACE, 0); return false; }
   id = ci.title_id;
+  replaces = title_installed(ci.on_nand ? MEDIATYPE_NAND : MEDIATYPE_SD, id, &ti);
+  alog("Install: title %016llX v0x%04X %s %s, %llu bytes; installed already: %s", (unsigned long long)ci.title_id, ci.title_version,
+       ci.on_nand ? "NAND" : "SD", ci.cls == CIA_CLASS_SYSTEM ? "system" : ci.cls == CIA_CLASS_DSIWARE ? "DSiWare" : "app", (unsigned long long)ci.total_size,
+       replaces ? "yes" : "no");
   LightLock_Lock(&g_lock);
   g_st.info = ci;
   g_st.has_info = 1;
   g_st.total = ci.total_size;
-  g_st.replaces = R_SUCCEEDED(AM_GetTitleInfo(ci.on_nand ? MEDIATYPE_NAND : MEDIATYPE_SD, 1, &id, &ti));
+  g_st.replaces = replaces;
   g_st.hash_expected = g_have_expect;
   g_st.state = INS_CONFIRM;
   touch();
@@ -263,6 +289,7 @@ static void install_from_file(void) {
   f = buf ? fopen(g_src, "rb") : NULL;
   if (!f) { free(buf); fail(INS_E_READ, 0); return; }
   set_state(INS_INSTALLING);
+  alog("Install: starting from the SD card%s", st.replaces ? " (the installed copy is removed first)" : "");
   if (!sink_open(&k, &st.info, st.replaces)) { fclose(f); free(buf); fail(INS_E_AM, k.res); return; }
   while ((n = fread(buf, 1, IO_SIZE, f)) > 0) {
     if (cancelled()) { sink_abort(&k); fclose(f); free(buf); fail(INS_E_CANCELLED, 0); return; }
@@ -284,6 +311,7 @@ static void install_from_url(void) {
   x.k = &k;
   x.ci = &st.info;
   set_state(INS_INSTALLING);
+  alog("Install: starting the download%s", st.replaces ? " (the installed copy is removed first)" : "");
   code = run_curl(g_src, &x, false);
   if (x.failed) { sink_abort(&k); fail(INS_E_AM, k.res); return; }
   if (code != CURLE_OK) {
@@ -367,7 +395,7 @@ static bool begin(const char *src, bool is_url, const uint8_t *sha256) {
   return true;
 }
 
-bool installer_start_file(const char *sd_path) { return begin(sd_path, false, NULL); }
+bool installer_start_file(const char *sd_path, const uint8_t *sha256) { return begin(sd_path, false, sha256); }
 bool installer_start_url(const char *url, const uint8_t *sha256) { return begin(url, true, sha256); }
 
 void installer_confirm(bool yes) {

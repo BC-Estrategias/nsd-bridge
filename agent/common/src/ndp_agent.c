@@ -1,4 +1,5 @@
 #include "ndp/ndp_agent.h"
+#include "ndp/ndp_path.h"
 
 #include <string.h>
 
@@ -146,24 +147,38 @@ static size_t do_device_info(ndp_agent *a, const ndp_header *req, uint8_t *out, 
 
 /* INSTALL_URL: validates the URL, then hands it to the platform (which asks the owner on the console). */
 static size_t do_install_url(ndp_agent *a, const ndp_header *req, const uint8_t *pl, uint8_t *out, size_t cap) {
-  const uint8_t *u, *h = NULL;
-  size_t lu, i, lh = 0;
-  char url[NDP_URL_MAX + 1], detail[96];
-  int rc;
+  const uint8_t *u = NULL, *p = NULL, *h = NULL;
+  size_t lu = 0, lp = 0, lh = 0, i;
+  char url[NDP_URL_MAX + 1], path[NDP_PATH_MAX + 1], detail[96];
+  const char *purl = NULL, *ppath = NULL;
+  int rc, has_url, has_path;
   ndp_tlv_w w;
   if (!a->cfg.install_url) return ndp_agent_error(out, cap, req, NDP_ST_UNSUPPORTED_COMMAND, "unknown command", 0);
-  if (!ndp_tlv_find(pl, req->payload_len, NDP_TAG_URL, &u, &lu) || lu == 0 || lu > NDP_URL_MAX)
-    return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url required", 0);
-  for (i = 0; i < lu; i++)
-    if (u[i] <= 0x20 || u[i] >= 0x7F) return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url must be printable ASCII without spaces", 0);
-  memcpy(url, u, lu);
-  url[lu] = '\0';
-  if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0)
-    return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url must start with http:// or https://", 0);
+  has_url = ndp_tlv_find(pl, req->payload_len, NDP_TAG_URL, &u, &lu);
+  has_path = ndp_tlv_find(pl, req->payload_len, NDP_TAG_PATH, &p, &lp);
+  if (has_url == has_path) return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "send either a url or a path", 0);
+  if (has_url) {
+    if (lu == 0 || lu > NDP_URL_MAX) return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url required", 0);
+    for (i = 0; i < lu; i++)
+      if (u[i] <= 0x20 || u[i] >= 0x7F) return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url must be printable ASCII without spaces", 0);
+    memcpy(url, u, lu);
+    url[lu] = '\0';
+    if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0)
+      return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url must start with http:// or https://", 0);
+    purl = url;
+  } else {
+    size_t n;
+    if (ndp_path_normalize(p, lp, path, sizeof path) != NDP_OK || path[0] != '/')
+      return ndp_agent_error(out, cap, req, NDP_ST_PATH_INVALID, "invalid path", 0);
+    n = strlen(path);
+    if (n < 6 || (path[n - 4] != '.') || (path[n - 3] | 0x20) != 'c' || (path[n - 2] | 0x20) != 'i' || (path[n - 1] | 0x20) != 'a')
+      return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "only .cia files can be installed", 0);
+    ppath = path;
+  }
   if (ndp_tlv_find(pl, req->payload_len, NDP_TAG_SHA256, &h, &lh) && lh != 32)
     return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "sha256 must be 32 bytes", 0);
   detail[0] = '\0';
-  rc = a->cfg.install_url(a->cfg.install_url_ctx, url, lh == 32 ? h : NULL, detail, sizeof detail);
+  rc = a->cfg.install_url(a->cfg.install_url_ctx, purl, ppath, lh == 32 ? h : NULL, detail, sizeof detail);
   if (rc != NDP_OK) return ndp_agent_error(out, cap, req, (uint16_t)rc, detail[0] ? detail : "the console cannot take this request now", 0);
   if (cap < NDP_HEADER_SIZE) return 0;
   ndp_tlv_w_init(&w, out + NDP_HEADER_SIZE, cap - NDP_HEADER_SIZE);

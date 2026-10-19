@@ -262,16 +262,23 @@ static bool g_is_new3ds = false;
 #ifndef AGENT_TEXT_UI
 static bool g_recv_open = false;
 #endif
-static int install_url_cb(void *ctx, const char *url, const uint8_t *sha256, char *detail, size_t cap) {
+static int install_url_cb(void *ctx, const char *url, const char *path, const uint8_t *sha256, char *detail, size_t cap) {
   (void)ctx;
 #ifndef AGENT_TEXT_UI
   if (!g_recv_open) { snprintf(detail, cap, "open Installer > Receive from the browser on the console first"); return NDP_ST_BUSY; }
   if (installer_busy()) { snprintf(detail, cap, "an install is already in progress or waiting for confirmation"); return NDP_ST_BUSY; }
+  if (path) {
+    char full[NDP_PATH_MAX + 8];
+    snprintf(full, sizeof full, "sdmc:%s", path);
+    if (!installer_start_file(full, sha256)) { snprintf(detail, cap, "the console is busy updating or installing"); return NDP_ST_BUSY; }
+    alog("Install: request from the browser (file %.60s)", path);
+    return NDP_OK;
+  }
   if (!installer_start_url(url, sha256)) { snprintf(detail, cap, "the console is busy updating or installing"); return NDP_ST_BUSY; }
   alog("Install: request from the browser (%.60s)", url);
   return NDP_OK;
 #else
-  (void)url; (void)sha256;
+  (void)url; (void)path; (void)sha256;
   snprintf(detail, cap, "this build has no installer");
   return NDP_ST_UNSUPPORTED_COMMAND;
 #endif
@@ -857,7 +864,7 @@ int main(int argc, char **argv) {
             break;
           }
           case UI_INST_SD:
-            if (!installer_start_file(ui_arg_str())) alog("Install: busy, not started");
+            if (!installer_start_file(ui_arg_str(), NULL)) alog("Install: busy, not started");
             break;
           case UI_INST_TYPE_URL: {
             /* the system keyboard takes over the screen; on return the next frame redraws */

@@ -580,6 +580,17 @@ export class NdpClient {
     await this.request(Command.INSTALL_URL, encodeTlv(fields));
   }
 
+  /** Asks a 3DS to offer installing a .cia that is already on its SD card (for example one just uploaded). Same rules as
+   * installUrl: the console takes it only while its "Receive from the browser" screen is open, and its owner confirms. */
+  async installFile(path: string, sha256?: Uint8Array): Promise<void> {
+    const fields: TlvField[] = [[Tag.PATH, str(normalizePath(path))]];
+    if (sha256) {
+      if (sha256.length !== 32) throw new RangeError("sha256 must be 32 bytes");
+      fields.push([Tag.SHA256, sha256]);
+    }
+    await this.request(Command.INSTALL_URL, encodeTlv(fields));
+  }
+
   async stat(path: string): Promise<FsStat> {
     const res = await this.request(Command.FS_STAT, encodeTlv([[Tag.PATH, str(normalizePath(path))]]));
     const t = parseTlv(res.payload);

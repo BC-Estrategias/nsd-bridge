@@ -39,6 +39,16 @@ suite("INSTALL_URL", () => {
         assert.equal(open.stdout(), before, "a refused URL never reaches the platform");
       }
       assert.equal(await code(c.installUrl("http://x/" + "a".repeat(1100))), "BAD_REQUEST", "too long");
+      // a .cia already on the console's card: accepted with its hash; anything else is refused before the platform sees it
+      const sha = new Uint8Array(32).fill(7);
+      await c.installFile("/cias/My Game.CIA", sha);
+      assert.match(open.stdout(), /INSTALL_PATH \/cias\/My Game\.CIA sha256=0707/);
+      for (const bad of ["/cias/readme.txt", "/cias/../../etc/x.cia", "relative/x.cia", "/x.cia.bak", "/.cia"]) {
+        const before = open.stdout();
+        const r = await code(c.installFile(bad));
+        assert.notEqual(r, "OK", `${bad} must be refused (here or on the console)`);
+        assert.equal(open.stdout(), before, "a refused path never reaches the platform");
+      }
       c.close();
 
       const c2 = await NdpClient.connect({ host: "127.0.0.1", port: closed.port });
@@ -71,6 +81,14 @@ suite("INSTALL_URL", () => {
       assert.equal((await w.hello()).auth, "none");
       await w.installUrl("https://github.com/x/y/releases/download/v1/app.cia");
       assert.match(a.stdout(), /INSTALL_URL https:\/\/github\.com\/x\/y\/releases\/download\/v1\/app\.cia/);
+      await w.installPath("/3ds/nintendo-dev-agent/game.cia", new Uint8Array(32).fill(1));
+      assert.match(a.stdout(), /INSTALL_PATH \/3ds\/nintendo-dev-agent\/game\.cia sha256=0101/);
+      // the console's own validation (the page client does not pre-check)
+      const before = a.stdout();
+      await assert.rejects(w.installPath("/cias/readme.txt"), (e: any) => e.statusName === "BAD_REQUEST");
+      await assert.rejects(w.installPath("cias/x.cia"), (e: any) => e.statusName === "PATH_INVALID");
+      await assert.rejects(w.installPath("/cias/../../x.cia"), (e: any) => e.statusName === "PATH_INVALID");
+      assert.equal(a.stdout(), before);
       w.close();
       // over the raw TCP port a client that is not paired still gets nothing
       const c = await NdpClient.connect({ host: "127.0.0.1", port: a.port });

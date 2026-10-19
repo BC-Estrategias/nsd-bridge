@@ -43,7 +43,7 @@ bool installer_busy(void);          /* probing, waiting for confirmation, or ins
 void installer_get(ins_status *out);
 
 /* Both return false if another install (or an update) is in progress. `sha256` may be NULL. */
-bool installer_start_file(const char *sd_path);                /* e.g. "sdmc:/cias/game.cia" */
+bool installer_start_file(const char *sd_path, const uint8_t *sha256);  /* e.g. "sdmc:/cias/game.cia"; sha256 may be NULL */
 bool installer_start_url(const char *url, const uint8_t *sha256);
 void installer_confirm(bool yes);   /* answer to INS_CONFIRM */
 void installer_cancel(void);        /* stop an install in progress */

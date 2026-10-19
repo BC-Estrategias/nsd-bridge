@@ -277,6 +277,13 @@
       await this.request(Command.INSTALL_URL, C.encodeTlv(fields));
     }
 
+    /** Asks the 3DS to offer installing a .cia already on its SD card; its owner confirms on the console. */
+    async installPath(path, sha256) {
+      const fields = [[Tag.PATH, C.str(path)]];
+      if (sha256) fields.push([Tag.SHA256, sha256]);
+      await this.request(Command.INSTALL_URL, C.encodeTlv(fields));
+    }
+
     async stat(path) {
       const t = C.parseTlv((await this.request(Command.FS_STAT, C.encodeTlv([[Tag.PATH, C.str(path)]]))).payload);
       return { type: t.u8(Tag.TYPE) === 2 ? "dir" : "file", size: t.u64(Tag.SIZE) || 0, mtime: t.u64(Tag.MTIME) || null };
@@ -455,7 +462,7 @@
           if (err) throw err;
           await this.#send(this.#encode({ kind: Kind.END, requestId: id, command: Command.FS_WRITE }));
           const final = C.parseTlv((await this.#awaitResponse(id, COMMIT_MS)).payload);
-          return { written: final.u64(Tag.WRITTEN) ?? size, replaced: final.u8(Tag.REPLACED) === 1, ms: performance.now() - t0 };
+          return { written: final.u64(Tag.WRITTEN) ?? size, replaced: final.u8(Tag.REPLACED) === 1, ms: performance.now() - t0, sha256: digest };
         } catch (e) {
           if (!(e instanceof NdpError)) this.close(); // the stream is in an unknown state
           throw e;
