@@ -1,4 +1,5 @@
 #ifndef AGENT_TEXT_UI
+#include "qr.h"
 #include "ui_internal.h"
 
 #include <3ds.h>
@@ -199,6 +200,7 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
     return a;
   }
   if (g_screen == SCR_RECV || g_screen == SCR_QR) {
+    if (g_screen == SCR_QR && (down & KEY_X)) { *redraw = true; return UI_INST_QR_SWITCH; }
     if ((down & (KEY_B | KEY_START)) || ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40)) {
       ui_action off = g_screen == SCR_RECV ? UI_INST_RECV_OFF : UI_INST_QR_OFF;
       go(SCR_INST);
@@ -403,10 +405,22 @@ static void draw_installer(const ui_model *m) {
   ui_list_row(SI_QR, g_sel[SCR_INST], 0, UI_T("Scan a QR code", "Escanear QR Code"), val, COL_INK);
 }
 
-static void draw_qr(void) {
+/* The scanner: the camera preview fills the top screen; the bottom screen explains. */
+static void draw_qr(const ui_model *m) {
+  ui_scene_top(COL_TOP_BG);
+  qr_draw_preview(0, 0);
+  if (!m->qr_on) {
+    ui_text(200, 100, 0.55f, COL_RED, UI_CENTER, "%s", UI_T("Camera not available", "Câmera indisponível"));
+    if (m->qr_err[0]) ui_text(200, 124, 0.4f, COL_DIM, UI_CENTER, "%.60s", m->qr_err);
+  }
+  ui_rect(0, 212, 400, 28, COL_TOP_HDR);
+  ui_text(200, 218, 0.45f, m->qr_bad ? COL_YELLOW : COL_WHITE, UI_CENTER, "%s", m->qr_bad ? UI_T("That code is not an http(s) address. Try another.", "Esse código não é um endereço http(s). Tente outro.") : UI_T("Point the camera at a QR code with a CIA address", "Aponte a câmera para um QR code com o endereço de um CIA"));
   ui_scene_bottom(COL_BOT_BG);
-  ui_bottom_chrome(UI_T("Scan a QR code", "Escanear QR Code"), UI_T("< Scanning  (B: back)", "< Escaneando  (B: voltar)"), UI_T("B: Back", "B: Voltar"));
-  ui_text(160, 100, 0.5f, COL_DIM, UI_CENTER, "%s", UI_T("Coming in the next step.", "Chega na próxima etapa."));
+  ui_bottom_chrome(UI_T("Scan a QR code", "Escanear QR Code"), UI_T("< Scanning  (B: back)", "< Escaneando  (B: voltar)"), UI_T("X: Switch camera   B: Back", "X: Trocar câmera   B: Voltar"));
+  ui_text(160, 70, 0.5f, COL_INK, UI_CENTER, "%s", m->qr_inner ? UI_T("Camera: inner", "Câmera: interna") : UI_T("Camera: outer", "Câmera: externa"));
+  ui_text(160, 100, 0.42f, COL_INK, UI_CENTER, "%s", UI_T("Show the QR code on a screen or on paper.", "Mostre o QR code numa tela ou no papel."));
+  ui_text(160, 120, 0.42f, COL_INK, UI_CENTER, "%s", UI_T("It must hold an http:// or https:// address.", "Ele precisa conter um endereço http:// ou https://."));
+  ui_text(160, 160, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("Nothing is installed before you confirm.", "Nada é instalado antes de você confirmar."));
 }
 
 static void draw_log(void) {
@@ -437,12 +451,17 @@ void ui_draw(const ui_model *m) {
     ui_end();
     return;
   }
+  if (g_screen == SCR_QR) {
+    draw_qr(m);
+    if (m->pairing == 2) draw_pair_request(m);
+    ui_end();
+    return;
+  }
   draw_top(m);
   switch (g_screen) {
     case SCR_INST: draw_installer(m); break;
     case SCR_SD: uii_sd_draw(); break;
     case SCR_RECV: uii_recv_draw(m); break;
-    case SCR_QR: draw_qr(); break;
     case SCR_MCP: draw_mcp(m); break;
     case SCR_DEVICES: draw_devices(m); break;
     case SCR_LOG: draw_log(); break;

@@ -10,6 +10,7 @@ ui.js
 session.js
 viewer.js
 transfer.js
+install.js
 files.js
 settings.js
 faq.js

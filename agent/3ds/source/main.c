@@ -16,6 +16,7 @@
 #include "access_ui.h"
 #include "alog.h"
 #include "installer.h"
+#include "qr.h"
 #include "ui.h"
 #include "updater.h"
 #include "ndp/ndp_access_file.h"
@@ -260,7 +261,7 @@ static int device_info(void *ctx, ndp_device_info *di) {
  * install flow then probes the file and asks the owner to confirm before anything is downloaded. */
 static bool g_is_new3ds = false;
 #ifndef AGENT_TEXT_UI
-static bool g_recv_open = false;
+static bool g_recv_open = false, g_qr_wanted = false, g_qr_restart = false, g_qr_bad = false, g_qr_inner = false;
 #endif
 static int install_url_cb(void *ctx, const char *url, const char *path, const uint8_t *sha256, char *detail, size_t cap) {
   (void)ctx;
@@ -634,6 +635,10 @@ static void build_model(ui_model *m, uint64_t now) {
   m->keys_warn = g_keys_dirty_warn;
   m->is_new3ds = g_is_new3ds;
   m->recv_open = g_recv_open;
+  m->qr_on = qr_active();
+  m->qr_inner = qr_active() ? qr_inner() : g_qr_inner;
+  m->qr_bad = g_qr_bad;
+  snprintf(m->qr_err, sizeof m->qr_err, "%s", qr_error());
   installer_get(&m->ins);
   snprintf(m->sd_free, sizeof m->sd_free, "%s", g_sd_free);
   m->uptime_s = (unsigned long)((now - g_start_ms) / 1000);
@@ -886,7 +891,9 @@ int main(int argc, char **argv) {
           }
           case UI_INST_RECV_ON: g_recv_open = true; alog("Install: receiving from the browser"); break;
           case UI_INST_RECV_OFF: g_recv_open = false; break;
-          case UI_INST_QR_ON: case UI_INST_QR_OFF: break; /* the scanner arrives in the next step */
+          case UI_INST_QR_ON: g_qr_wanted = true; g_qr_bad = false; g_qr_restart = false; (void)qr_start(g_qr_inner); break;
+          case UI_INST_QR_OFF: g_qr_wanted = false; qr_stop(); break;
+          case UI_INST_QR_SWITCH: g_qr_inner = !g_qr_inner; qr_stop(); (void)qr_start(g_qr_inner); break;
           case UI_INST_YES: installer_confirm(true); break;
           case UI_INST_NO: installer_confirm(false); break;
           case UI_INST_CANCEL: installer_cancel(); break;
@@ -930,6 +937,33 @@ int main(int argc, char **argv) {
       }
       updater_get(&us);
       if (us.revision != last_rev) { last_rev = us.revision; changed = true; }
+      if (g_qr_wanted) {
+        char code[1100];
+        ins_status qi;
+        installer_get(&qi);
+        if (qr_take(code, sizeof code)) {
+          qr_stop();
+          if (!strncmp(code, "http://", 7) || !strncmp(code, "https://", 8)) {
+            g_qr_bad = false;
+            alog("QR code read: %.80s", code);
+            if (!installer_start_url(code, NULL)) alog("Install: busy, not started");
+          } else {
+            g_qr_bad = true;
+            alog("QR code is not an http(s) address");
+          }
+          g_qr_restart = true; /* back to scanning once the install flow (if any) is over */
+          changed = true;
+          draw_now = true;
+        } else if (qr_active()) {
+          static unsigned last_ser = 0;
+          unsigned ser = qr_frame_serial();
+          if (ser != last_ser && now - last_draw >= 100) { last_ser = ser; changed = true; draw_now = true; }
+        } else if (g_qr_restart && qi.state == INS_IDLE) {
+          g_qr_restart = false;
+          (void)qr_start(g_qr_inner);
+          changed = true;
+        }
+      }
       {
         static unsigned last_ins_rev = 0;
         ins_status is;
@@ -977,6 +1011,7 @@ quit:
 #endif
   alog("Exiting");
 #ifndef AGENT_TEXT_UI
+  qr_stop();
   installer_shutdown();
   updater_shutdown();
 #endif

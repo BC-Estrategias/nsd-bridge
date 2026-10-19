@@ -12,13 +12,14 @@ include $(DEVKITARM)/3ds_rules
 TARGET      := nsd-bridge
 BUILD       := build
 # platform code + the platform-neutral core + the shared BSD-socket server + the embedded web page
-SOURCES     := source ../common/src ../posix/src ../web
-INCLUDES    := source ../common/include ../posix/include ../web
+SOURCES     := source third_party/quirc ../common/src ../posix/src ../web
+INCLUDES    := source third_party/quirc ../common/include ../posix/include ../web
 
 # The version comes from the single source of truth (shown in the Homebrew Launcher description).
 AGENT_VERSION   := $(shell sed -n 's/^\#define NDP_AGENT_VERSION "\(.*\)"$$/\1/p' $(TOPDIR)/../common/include/ndp/ndp_defs.h)
 APP_TITLE       := NSD Bridge
-APP_DESCRIPTION := v$(AGENT_VERSION) - wireless SD card bridge
+# shown by the HOME button ("suspended software") and in the Homebrew Launcher: the name and the version first
+APP_DESCRIPTION := NSD Bridge v$(AGENT_VERSION) - SD bridge
 APP_AUTHOR      := BC Labs
 ICON            := icon.png
 
@@ -83,6 +84,9 @@ else
 
 $(OUTPUT).3dsx : $(OUTPUT).elf $(_3DSXDEPS)
 $(OUTPUT).elf  : $(OFILES)
+
+# quirc (third party): its decoder keeps big structures on the stack (it runs on a 128 KB worker thread, see qr.c)
+quirc.o decode.o identify.o version_db.o : CFLAGS += -w
 
 -include $(DEPSDIR)/*.d
 

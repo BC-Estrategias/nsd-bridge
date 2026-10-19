@@ -11,7 +11,7 @@
   const t = (...a) => NDP.i18n.t(...a);
   const tp = (key) => NDP.i18n.tp(key, S.info && S.info.platform);
 
-  const SECTIONS = ["what", "pairing", "keys", "modes", "upload", "edit", "organize", "trash", "mcp", "security", "trouble", "about"];
+  const SECTIONS = ["what", "pairing", "keys", "modes", "upload", "install", "edit", "organize", "trash", "mcp", "security", "trouble", "about"];
   const REPO = "https://github.com/BC-Estrategias/nsd-bridge";
 
   function prose(text) {
