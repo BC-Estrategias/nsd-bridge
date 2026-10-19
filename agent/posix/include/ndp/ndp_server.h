@@ -161,6 +161,8 @@ uint32_t ndp_server_pairing_remaining_ms(ndp_server *s);
 /* Forgets every paired computer (persisted through keys_changed). The current client stays connected
  * until it disconnects; its session key is no longer valid for new sessions. */
 void ndp_server_clear_keys(ndp_server *s);
+/* Forgets one paired computer (by its 4-byte key id) and lets the platform persist the change. Returns 0, or -1 if unknown. */
+int ndp_server_forget_key(ndp_server *s, const uint8_t key_id[4]);
 
 /* Changes the access mode (also for the current connection). Dropping to READ_ONLY aborts an upload. */
 void ndp_server_set_mode(ndp_server *s, ndp_mode mode);

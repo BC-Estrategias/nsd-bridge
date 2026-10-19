@@ -28,9 +28,11 @@ static C3D_RenderTarget *g_top, *g_bot;
 static C2D_TextBuf g_tb;
 static bool g_ready, g_pt;
 
-enum { SCR_MAIN, SCR_LOG };
+enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_COUNT };
 static int g_screen = SCR_MAIN, g_log_off = 0;
-static int g_sel = 1; /* starts on the row after Updates (IT_FOLDERS): a stray A never starts an install */
+static int g_sel[SCR_COUNT] = {1, 0, 0, 0}; /* the main menu starts on the row after Updates: a stray A never starts an install */
+static int g_arg;
+static int cur_screen(void) { return (unsigned)g_screen < SCR_COUNT ? g_screen : SCR_MAIN; }
 
 void ui_init(void) {
   u8 lang = 0;
@@ -115,32 +117,21 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
   return 0;
 }
 
-/* ---- main menu ---- */
-enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIR, IT_WEB, IT_PAIRED, IT_LOG, IT_EXIT, IT_COUNT };
+/* ---- the screens: main menu -> MCP pairing -> paired devices (B goes back one level) ---- */
+enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_WEB, IT_MCP, IT_LOG, IT_EXIT, IT_COUNT };
+enum { SP_PAIR, SP_DEVICES, SP_COUNT };
+
+int ui_arg(void) { return g_arg; }
 
 static const char *item_name(int i) {
   switch (i) {
+    case IT_UPDATE: return UI_T("Updates", "Atualizações");
     case IT_FOLDERS: return UI_T("Open folders", "Pastas liberadas");
     case IT_MODE: return UI_T("Mode", "Modo");
-    case IT_PAIR: return UI_T("Pair a device", "Parear dispositivo");
     case IT_WEB: return UI_T("Web page", "Página web");
-    case IT_PAIRED: return UI_T("Paired devices", "Dispositivos pareados");
-    case IT_UPDATE: return UI_T("Updates", "Atualizações");
+    case IT_MCP: return UI_T("MCP pairing", "Pareamento MCP");
     case IT_LOG: return UI_T("Activity log", "Log de atividade");
     default: return UI_T("Exit", "Sair");
-  }
-}
-
-static ui_action item_action(int i) {
-  switch (i) {
-    case IT_FOLDERS: return UI_FOLDERS;
-    case IT_MODE: return UI_MODE;
-    case IT_PAIR: return UI_PAIR;
-    case IT_WEB: return UI_WEB;
-    case IT_PAIRED: return UI_FORGET;
-    case IT_UPDATE: return UI_UPDATE;
-    case IT_EXIT: return UI_EXIT;
-    default: return UI_NONE;
   }
 }
 
@@ -150,16 +141,53 @@ static int log_count(void) {
   return n;
 }
 
+/* rows on the current screen */
+static int rows_here(const ui_model *m) {
+  switch (g_screen) {
+    case SCR_MAIN: return IT_COUNT;
+    case SCR_MCP: return SP_COUNT;
+    case SCR_DEVICES: return m->paired_n + (m->paired_n > 0 ? 1 : 0); /* + "forget all" */
+    default: return 0;
+  }
+}
+
+static void go(int screen) { g_screen = screen; }
+
+/* Runs the highlighted row of the current screen. */
+static ui_action activate(const ui_model *m) {
+  int sel = g_sel[cur_screen()];
+  if (g_screen == SCR_MAIN) {
+    switch (sel) {
+      case IT_UPDATE: return UI_UPDATE;
+      case IT_FOLDERS: return UI_FOLDERS;
+      case IT_MODE: return UI_MODE;
+      case IT_WEB: return UI_WEB;
+      case IT_MCP: go(SCR_MCP); return UI_NONE;
+      case IT_LOG: g_log_off = 0; go(SCR_LOG); return UI_NONE;
+      default: return UI_EXIT;
+    }
+  }
+  if (g_screen == SCR_MCP) {
+    if (sel == SP_PAIR) return UI_PAIR;
+    g_sel[SCR_DEVICES] = 0;
+    go(SCR_DEVICES);
+    return UI_NONE;
+  }
+  if (g_screen == SCR_DEVICES) {
+    if (sel < m->paired_n) { g_arg = sel; if (g_sel[SCR_DEVICES] > 0 && g_sel[SCR_DEVICES] >= m->paired_n - 1) g_sel[SCR_DEVICES]--; return UI_UNPAIR_ONE; }
+    return UI_FORGET; /* the "forget all" row: first press arms it, the second one does it */
+  }
+  return UI_NONE;
+}
+
 ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_model *m, bool *redraw) {
-  /* a pairing request owns A/B (and the two touch buttons) until it is answered */
+  /* a pairing request owns A/B (and the two touch buttons) on every screen until it is answered */
   if (m->pairing == 2) {
     if (down & KEY_A) { *redraw = true; return UI_PAIR_YES; }
     if (down & KEY_B) { *redraw = true; return UI_PAIR_NO; }
-    if (down & KEY_TOUCH) {
-      if (touch->py >= 150 && touch->py < 200) {
-        *redraw = true;
-        return touch->px < 160 ? UI_PAIR_YES : UI_PAIR_NO;
-      }
+    if ((down & KEY_TOUCH) && touch->py >= 150 && touch->py < 200) {
+      *redraw = true;
+      return touch->px < 160 ? UI_PAIR_YES : UI_PAIR_NO;
     }
     return UI_NONE;
   }
@@ -176,34 +204,38 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
       if (g_log_off > max) g_log_off = max;
       *redraw = true;
     }
-    if ((down & KEY_B) || (down & KEY_START) || ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40)) {
-      g_screen = SCR_MAIN;
-      *redraw = true;
+  } else {
+    int n = rows_here(m), sel = g_sel[cur_screen()];
+    if (g_screen == SCR_MAIN) {
+      /* the old physical shortcuts, main menu only */
+      if (down & KEY_START) return UI_EXIT;
+      if (down & KEY_X) return UI_MODE;
+      if (down & KEY_Y) return UI_PAIR;
+      if (down & KEY_R) return UI_WEB;
+      if (down & KEY_SELECT) return UI_FORGET;
     }
-    return UI_NONE;
-  }
-  if (down & KEY_START) return UI_EXIT;
-  if (down & KEY_X) return UI_MODE;
-  if (down & KEY_Y) return UI_PAIR;
-  if (down & KEY_R) return UI_WEB;
-  if (down & KEY_SELECT) return UI_FORGET;
-  if (down & (KEY_DDOWN | KEY_CPAD_DOWN)) { g_sel = (g_sel + 1) % IT_COUNT; *redraw = true; }
-  else if (down & (KEY_DUP | KEY_CPAD_UP)) { g_sel = (g_sel + IT_COUNT - 1) % IT_COUNT; *redraw = true; }
-  else if (down & KEY_A) {
-    *redraw = true;
-    if (g_sel == IT_LOG) { g_screen = SCR_LOG; g_log_off = 0; return UI_NONE; }
-    return item_action(g_sel);
-  } else if (down & KEY_TOUCH) {
-    int r = ui_row_at(touch->py);
-    if (r >= 0 && r < IT_COUNT) {
-      /* first tap selects, a tap on the selected row runs it (a stray touch never exits or changes the mode) */
-      *redraw = true;
-      if (r == g_sel) {
-        if (g_sel == IT_LOG) { g_screen = SCR_LOG; g_log_off = 0; return UI_NONE; }
-        return item_action(g_sel);
+    if (n > 0 && sel >= n) { g_sel[cur_screen()] = sel = n - 1; *redraw = true; }
+    if (down & (KEY_DDOWN | KEY_CPAD_DOWN)) { if (n) g_sel[cur_screen()] = (sel + 1) % n; *redraw = true; }
+    else if (down & (KEY_DUP | KEY_CPAD_UP)) { if (n) g_sel[cur_screen()] = (sel + n - 1) % n; *redraw = true; }
+    else if ((down & KEY_A) && n > 0) { *redraw = true; return activate(m); }
+    else if ((down & KEY_TOUCH) && touch->py >= UI_LIST_Y) {
+      int r = ui_row_at(touch->py), top = g_screen == SCR_DEVICES && sel >= UI_LIST_ROWS ? sel - UI_LIST_ROWS + 1 : 0;
+      r = r < 0 ? -1 : r + top;
+      if (r >= 0 && r < n) {
+        /* the first tap selects, a tap on the selected row runs it (a stray touch never exits, changes the mode or unpairs) */
+        *redraw = true;
+        if (r == sel) return activate(m);
+        g_sel[cur_screen()] = r;
       }
-      g_sel = r;
     }
+  }
+  /* B (and START on the sub-screens) goes back one level; a tap on the title bar does too */
+  if ((down & KEY_B) || (g_screen != SCR_MAIN && (down & KEY_START)) ||
+      ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40 && g_screen != SCR_MAIN)) {
+    if (g_screen == SCR_DEVICES) go(SCR_MCP);
+    else if (g_screen != SCR_MAIN) go(SCR_MAIN);
+    else return UI_NONE;
+    *redraw = true;
   }
   return UI_NONE;
 }
@@ -270,7 +302,15 @@ static void draw_top(const ui_model *m) {
   if (m->keys_warn) ui_text(200, 204, 0.45f, COL_RED, UI_CENTER, "%s", UI_T("Pairing not saved (SD error)", "Pareamento não salvo (erro no SD)"));
 }
 
-static void draw_menu(const ui_model *m) {
+/* One list row: highlight, name on the left, value on the right. */
+static void list_row(int i, int sel, int top, const char *name, const char *val, uint32_t ink) {
+  float y = (float)(UI_LIST_Y + (i - top) * UI_ROW_H);
+  if (i == sel) ui_rect(0, y, 320, UI_ROW_H, COL_SEL);
+  ui_text(10, y + 3, 0.5f, ink, 0, "%.30s", name);
+  if (val && val[0]) ui_text(310, y + 4, 0.45f, ink, UI_RIGHT, "%s", val);
+}
+
+static void draw_main(const ui_model *m) {
   int i;
   char info[80], val[48];
   snprintf(info, sizeof info, "SD: %s %s   %s%s%s", m->sd_free[0] ? m->sd_free : "-", m->sd_free[0] ? UI_T("free", "livres") : "",
@@ -278,19 +318,9 @@ static void draw_menu(const ui_model *m) {
   ui_scene_bottom(COL_BOT_BG);
   ui_bottom_chrome(info, UI_T("Main menu", "Menu principal"), UI_T("A: Select   X: Mode   Y: Pair   START: Exit", "A: Selecionar  X: Modo  Y: Parear  START: Sair"));
   for (i = 0; i < IT_COUNT; i++) {
-    float y = (float)(UI_LIST_Y + i * UI_ROW_H);
     uint32_t ink = COL_INK;
     val[0] = '\0';
-    if (i == g_sel) ui_rect(0, y, 320, UI_ROW_H, COL_SEL);
     switch (i) {
-      case IT_FOLDERS: if (m->whole_sd) { snprintf(val, sizeof val, "%s", UI_T("WHOLE SD", "SD INTEIRO")); ink = COL_INK_RED; } else snprintf(val, sizeof val, "%d", m->open_folders); break;
-      case IT_MODE: snprintf(val, sizeof val, "%s", m->read_only ? UI_T("Read-only", "Leitura") : UI_T("Development", "Desenvolvimento")); break;
-      case IT_PAIR: if (m->pairing == 1) snprintf(val, sizeof val, "%s %lus", UI_T("open", "aberto"), (unsigned long)m->left_s); break;
-      case IT_WEB: snprintf(val, sizeof val, "%s", m->web_on ? UI_T("on", "ligada") : UI_T("off", "desligada")); break;
-      case IT_PAIRED:
-        if (m->forget_armed) { snprintf(val, sizeof val, "%s", UI_T("tap again: forget all", "de novo: esquecer todos")); ink = COL_INK_RED; }
-        else snprintf(val, sizeof val, "%d", m->paired);
-        break;
       case IT_UPDATE:
         switch (m->upd) {
           case UPD_CHECKING: snprintf(val, sizeof val, "%s", UI_T("checking...", "verificando...")); break;
@@ -304,21 +334,38 @@ static void draw_menu(const ui_model *m) {
           default: snprintf(val, sizeof val, "%s", UI_T("tap to check", "verificar")); break;
         }
         break;
+      case IT_FOLDERS: if (m->whole_sd) { snprintf(val, sizeof val, "%s", UI_T("WHOLE SD", "SD INTEIRO")); ink = COL_INK_RED; } else snprintf(val, sizeof val, "%d", m->open_folders); break;
+      case IT_MODE: snprintf(val, sizeof val, "%s", m->read_only ? UI_T("Read-only", "Leitura") : UI_T("Development", "Desenvolvimento")); break;
+      case IT_WEB: snprintf(val, sizeof val, "%s", m->web_on ? UI_T("on", "ligada") : UI_T("off", "desligada")); break;
+      case IT_MCP: snprintf(val, sizeof val, "%d", m->paired_n); break;
       default: break;
     }
-    ui_text(10, y + 3, 0.5f, ink, 0, "%s", item_name(i));
-    if (val[0]) ui_text(310, y + 4, 0.45f, ink, UI_RIGHT, "%s", val);
+    list_row(i, g_sel[SCR_MAIN], 0, item_name(i), val, ink);
   }
-  if (m->pairing == 2) {
-    ui_rect(0, 100, 320, 120, COL_BOT_BG);
-    ui_rect(0, 100, 320, 2, COL_BAR);
-    ui_text(160, 108, 0.5f, COL_INK, UI_CENTER, "%s", UI_T("Same number on the page?", "Mesmo número na página?"));
-    ui_text(160, 126, 0.9f, COL_INK, UI_CENTER, "%03u %03u", m->sas / 1000u, m->sas % 1000u);
-    ui_rect(10, 160, 140, 40, UI_RGB(0x4c, 0xaf, 0x50));
-    ui_text(80, 169, 0.55f, COL_WHITE, UI_CENTER, "A: %s", UI_T("Yes, pair", "Sim, parear"));
-    ui_rect(170, 160, 140, 40, UI_RGB(0xe5, 0x39, 0x35));
-    ui_text(240, 169, 0.55f, COL_WHITE, UI_CENTER, "B: %s", UI_T("No", "Não"));
-    if (m->p2_replaces && m->p2_replaces[0]) ui_text(160, 202, 0.38f, COL_INK, UI_CENTER, "%s \"%.24s\"", UI_T("replaces", "substitui"), m->p2_replaces);
+}
+
+static void draw_mcp(const ui_model *m) {
+  char val[32];
+  ui_scene_bottom(COL_BOT_BG);
+  ui_bottom_chrome(UI_T("For computers using ndev or the MCP", "Para computadores com ndev ou MCP"), UI_T("< MCP pairing  (B: back)", "< Pareamento MCP  (B: voltar)"),
+                   UI_T("A: Select   B: Back", "A: Selecionar   B: Voltar"));
+  val[0] = '\0';
+  if (m->pairing == 1) snprintf(val, sizeof val, "%s %lus", UI_T("open", "aberto"), (unsigned long)m->left_s);
+  list_row(SP_PAIR, g_sel[SCR_MCP], 0, UI_T("Pair a device", "Parear dispositivo"), val, COL_INK);
+  snprintf(val, sizeof val, "%d", m->paired_n);
+  list_row(SP_DEVICES, g_sel[SCR_MCP], 0, UI_T("Paired devices", "Dispositivos pareados"), val, COL_INK);
+  if (!m->auth_required) ui_text(10, 110, 0.4f, COL_INK_RED, 0, "%s", UI_T("This build has pairing turned off.", "Esta versão está com o pareamento desligado."));
+}
+
+static void draw_devices(const ui_model *m) {
+  int i, n = rows_here(m), sel = g_sel[SCR_DEVICES], top = sel >= UI_LIST_ROWS ? sel - UI_LIST_ROWS + 1 : 0;
+  ui_scene_bottom(COL_BOT_BG);
+  ui_bottom_chrome(UI_T("Computers paired with this console", "Computadores pareados com este console"), UI_T("< Paired devices  (B: back)", "< Dispositivos pareados  (B: voltar)"),
+                   UI_T("A / tap again: unpair   B: Back", "A / tocar de novo: desparear   B: Voltar"));
+  if (n == 0) { ui_text(160, 100, 0.5f, COL_DIM, UI_CENTER, "%s", UI_T("No paired devices.", "Nenhum dispositivo pareado.")); return; }
+  for (i = top; i < n && i < top + UI_LIST_ROWS; i++) {
+    if (i < m->paired_n) list_row(i, sel, top, m->paired_label[i][0] ? m->paired_label[i] : UI_T("(unnamed)", "(sem nome)"), i == sel ? UI_T("tap again: unpair", "de novo: desparear") : "", i == sel ? COL_INK_RED : COL_INK);
+    else list_row(i, sel, top, UI_T("Forget all", "Esquecer todos"), m->forget_armed ? UI_T("tap again: confirm", "de novo: confirmar") : "", COL_INK_RED);
   }
 }
 
@@ -330,11 +377,28 @@ static void draw_log(void) {
     ui_text(4, (float)(UI_LIST_Y + i * 12), 0.36f, COL_INK, 0, "%.68s", alog_get(g_log_off + i));
 }
 
+static void draw_pair_request(const ui_model *m) {
+  ui_rect(0, 100, 320, 120, COL_BOT_BG);
+  ui_rect(0, 100, 320, 2, COL_BAR);
+  ui_text(160, 108, 0.5f, COL_INK, UI_CENTER, "%s", UI_T("Same number on the computer?", "Mesmo número no computador?"));
+  ui_text(160, 126, 0.9f, COL_INK, UI_CENTER, "%03u %03u", m->sas / 1000u, m->sas % 1000u);
+  ui_rect(10, 160, 140, 40, UI_RGB(0x4c, 0xaf, 0x50));
+  ui_text(80, 169, 0.55f, COL_WHITE, UI_CENTER, "A: %s", UI_T("Yes, pair", "Sim, parear"));
+  ui_rect(170, 160, 140, 40, UI_RGB(0xe5, 0x39, 0x35));
+  ui_text(240, 169, 0.55f, COL_WHITE, UI_CENTER, "B: %s", UI_T("No", "Não"));
+  if (m->p2_replaces && m->p2_replaces[0]) ui_text(160, 202, 0.38f, COL_INK, UI_CENTER, "%s \"%.24s\"", UI_T("replaces", "substitui"), m->p2_replaces);
+}
+
 void ui_draw(const ui_model *m) {
   ui_begin();
   draw_top(m);
-  if (g_screen == SCR_LOG && m->pairing != 2) draw_log();
-  else draw_menu(m);
+  switch (g_screen) {
+    case SCR_MCP: draw_mcp(m); break;
+    case SCR_DEVICES: draw_devices(m); break;
+    case SCR_LOG: draw_log(); break;
+    default: draw_main(m); break;
+  }
+  if (m->pairing == 2) draw_pair_request(m);
   ui_end();
 }
 #endif /* !AGENT_TEXT_UI */

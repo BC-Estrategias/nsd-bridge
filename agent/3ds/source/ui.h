@@ -20,6 +20,7 @@ typedef enum {
   UI_PAIR,      /* open/close the pairing window */
   UI_WEB,       /* web page on/off */
   UI_FORGET,    /* arm / confirm "forget all pairings" */
+  UI_UNPAIR_ONE, /* forget one paired computer: its index is ui_arg() */
   UI_UPDATE,    /* check for / install an update */
   UI_EXIT,
   UI_PAIR_YES,  /* answer to a pairing request */
@@ -41,7 +42,8 @@ typedef struct {
   int open_folders, writable_folders;
   bool whole_sd;
   bool auth_required;
-  int paired;
+  int paired_n;
+  char paired_label[NDP_MAX_KEYS][NDP_LABEL_MAX + 1];
   int pairing;           /* 0 none, 1 window open (code), 2 a request is waiting for A/B */
   unsigned sas;
   const char *p2_peer, *p2_label, *p2_replaces;
@@ -60,6 +62,7 @@ typedef struct {
 
 void ui_init(void);
 void ui_exit(void);
+int ui_arg(void);  /* the index that goes with the last UI_UNPAIR_ONE */
 bool ui_pt(void);  /* true when the console is set to Portuguese: all strings pick pt-BR */
 #define UI_T(en, pt) (ui_pt() ? (pt) : (en))
 

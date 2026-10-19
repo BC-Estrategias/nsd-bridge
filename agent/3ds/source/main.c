@@ -583,7 +583,8 @@ static void build_model(ui_model *m, uint64_t now) {
     if (strcmp(g_access.e[i].path, "/") == 0) m->whole_sd = true;
   }
   m->auth_required = AGENT_AUTH_REQUIRED;
-  m->paired = g_srv.keys.count;
+  m->paired_n = g_srv.keys.count;
+  for (i = 0; i < g_srv.keys.count && i < NDP_MAX_KEYS; i++) snprintf(m->paired_label[i], sizeof m->paired_label[i], "%s", g_srv.keys.keys[i].label);
   if (AGENT_AUTH_REQUIRED) {
     uint32_t left = ndp_server_pairing_remaining_ms(&g_srv);
     if (ndp_server_pair2_pending(&g_srv)) {
@@ -809,6 +810,17 @@ int main(int argc, char **argv) {
               g_forget_armed_until = t + FORGET_CONFIRM_MS;
             }
             break;
+          case UI_UNPAIR_ONE: {
+            int idx = ui_arg();
+            if (idx >= 0 && idx < g_srv.keys.count) {
+              uint8_t kid[4];
+              char label[NDP_LABEL_MAX + 1];
+              memcpy(kid, g_srv.keys.keys[idx].key_id, 4);
+              snprintf(label, sizeof label, "%s", g_srv.keys.keys[idx].label);
+              if (ndp_server_forget_key(&g_srv, kid) == 0) alog("Unpaired \"%s\"", label);
+            }
+            break;
+          }
           case UI_PAIR_YES:
           case UI_PAIR_NO:
             alog(act == UI_PAIR_YES ? "Pairing approved" : "Pairing refused");

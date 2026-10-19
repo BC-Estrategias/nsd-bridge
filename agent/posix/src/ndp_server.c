@@ -183,6 +183,13 @@ void ndp_server_clear_keys(ndp_server *s) {
   if (s->plat.keys_changed) s->plat.keys_changed(s->plat.ctx, &s->keys);
 }
 
+int ndp_server_forget_key(ndp_server *s, const uint8_t key_id[4]) {
+  if (ndp_keystore_remove(&s->keys, key_id) != 0) return -1;
+  slog(s, "[PAIR] one pairing forgotten");
+  if (s->plat.keys_changed) s->plat.keys_changed(s->plat.ctx, &s->keys);
+  return 0;
+}
+
 void ndp_server_set_mode(ndp_server *s, ndp_mode mode) {
   int i;
   s->agent_cfg.mode = mode;
