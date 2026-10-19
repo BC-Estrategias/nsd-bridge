@@ -722,7 +722,12 @@ int main(int argc, char **argv) {
 #ifndef AGENT_TEXT_UI
   refresh_sd_free();
 #endif
+#ifndef AGENT_TEXT_UI
   updater_init(argc > 0 ? argv[0] : NULL);
+#else
+  (void)argc;
+  (void)argv;
+#endif
   draw(now_ms(NULL));
   while (aptMainLoop()) {
     uint64_t now;
