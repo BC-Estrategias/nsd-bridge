@@ -569,6 +569,12 @@ export class NdpClient {
     await this.request(Command.PAIR_FORGET, encodeTlv([[Tag.KEY_ID, keyId]]));
   }
 
+  /** Asks a 3DS to offer installing a title from this URL (http:// or https://). The console only takes it while its
+   * "Receive from the browser" screen is open, and its owner confirms there before anything is downloaded. */
+  async installUrl(url: string): Promise<void> {
+    await this.request(Command.INSTALL_URL, encodeTlv([[Tag.URL, str(url)]]));
+  }
+
   async stat(path: string): Promise<FsStat> {
     const res = await this.request(Command.FS_STAT, encodeTlv([[Tag.PATH, str(normalizePath(path))]]));
     const t = parseTlv(res.payload);

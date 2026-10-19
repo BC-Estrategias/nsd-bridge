@@ -91,6 +91,16 @@ static void keys_changed(void *ctx, const ndp_keystore *keys) {
   if (rc != 0) fprintf(stderr, "[ERR] could not save keys file: %d\n", rc);
 }
 
+/* --accept-installs: INSTALL_URL requests are taken and printed ("INSTALL_URL <url>"), so tests can see them. */
+static int g_accept_installs = 0;
+static int host_install_url(void *ctx, const char *url, char *detail, size_t cap) {
+  (void)ctx;
+  if (!g_accept_installs) { snprintf(detail, cap, "open the install screen on the console first"); return NDP_ST_BUSY; }
+  printf("INSTALL_URL %s\n", url);
+  fflush(stdout);
+  return NDP_OK;
+}
+
 int main(int argc, char **argv) {
   const char *bind_addr = "127.0.0.1";
   const char *root = NULL;
@@ -146,6 +156,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--pair-ms") && i + 1 < argc) pair_ms = (unsigned)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--pair-open")) pair_open = 1;
     else if (!strcmp(argv[i], "--web-open")) web_open = 1;
+    else if (!strcmp(argv[i], "--accept-installs")) g_accept_installs = 1;
     else if (!strcmp(argv[i], "--platform") && i + 1 < argc) platform_name = argv[++i];
     else if (!strcmp(argv[i], "--pair-approve") && i + 1 < argc) {
       const char *a = argv[++i];
@@ -205,6 +216,7 @@ int main(int argc, char **argv) {
   plat.log = log_line;
   plat.keys_changed = keys_changed;
   cfg.platform = platform_name; /* after the options are parsed */
+  if (!strcmp(platform_name, "3ds")) cfg.install_url = host_install_url; /* only a 3DS has an installer */
   ndp_server_init(&srv, &plat, &cfg);
   if (g_keys_file) {
     int lr = ndp_keystore_load_file(&keys, g_keys_file);

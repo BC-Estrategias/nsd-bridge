@@ -50,6 +50,12 @@ typedef struct {
    * FAT). NULL => DEVICE_INFO answers UNSUPPORTED_COMMAND. Returns 0, or non-zero => IO_ERROR. */
   int (*device_info)(void *ctx, ndp_device_info *out);
   void *device_info_ctx;
+  /* Optional. INSTALL_URL: the platform decides whether it can take the request now (the console only does while its
+   * "receive from the browser" screen is open) and asks its owner to confirm. Returns NDP_OK when the request was taken;
+   * otherwise a status (NDP_ST_BUSY with a `detail` text for "not open now / one already pending"). NULL => the command
+   * answers UNSUPPORTED_COMMAND. The URL has been checked (http/https, printable ASCII, no spaces). */
+  int (*install_url)(void *ctx, const char *url, char *detail, size_t detail_cap);
+  void *install_url_ctx;
   /* Set by the server per connection: a small id for the connection and its peer address (for the pairing prompt). */
   int conn_id;
   const char *peer;

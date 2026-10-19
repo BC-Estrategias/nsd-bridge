@@ -270,6 +270,11 @@
     }
 
     // ---- file system
+    /** Asks the 3DS to offer installing a title from this URL; its owner confirms on the console. */
+    async installUrl(url) {
+      await this.request(Command.INSTALL_URL, C.encodeTlv([[Tag.URL, C.str(url)]]));
+    }
+
     async stat(path) {
       const t = C.parseTlv((await this.request(Command.FS_STAT, C.encodeTlv([[Tag.PATH, C.str(path)]]))).payload);
       return { type: t.u8(Tag.TYPE) === 2 ? "dir" : "file", size: t.u64(Tag.SIZE) || 0, mtime: t.u64(Tag.MTIME) || null };

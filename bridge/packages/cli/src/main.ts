@@ -39,6 +39,8 @@ Usage:
                                                   DSi: download the newest DSi build from GitHub (SHA-256 checked) and send it
                                                   to /nsd-bridge/ (needs DEVELOPMENT mode: press X on the DSi). The 3DS updates
                                                   itself from its Updates menu.
+  ndev install <host[:port]> <url>                3DS: offer installing a title from an http(s) URL; on the console open
+                                                  Installer > Receive from the browser, and confirm there with A
   ndev mkdir <host[:port]> <path>                 create a directory (the parent must exist)
   ndev mv    <host[:port]> <from> <to>            move/rename a file or folder (never overwrites; also restores from the trash)
   ndev purge <host[:port]> <path>...              PERMANENTLY delete items inside a trash folder (<root>/.ndp-trash/...), or
@@ -202,7 +204,7 @@ async function main(argv: string[]): Promise<number> {
       client.close();
     }
   }
-  if (!["hello", "ping", "info", "access", "ls", "stat", "cat", "get", "put", "mkdir", "mv", "cp", "rm", "purge", "update"].includes(cmd) || !target) {
+  if (!["hello", "ping", "info", "access", "ls", "stat", "cat", "get", "put", "mkdir", "mv", "cp", "rm", "purge", "update", "install"].includes(cmd) || !target) {
     console.error(USAGE);
     return 2;
   }
@@ -232,6 +234,19 @@ async function main(argv: string[]): Promise<number> {
       for (const r of a.readRoots) console.log(`  ${r}${a.writeRoots.includes(r) ? "   (also writable)" : ""}`);
       console.log(a.mode === "READ_ONLY" ? "writable folders (writes are OFF: press X on the console):" : "writable folders:");
       for (const r of a.writeRoots) console.log(`  ${r}`);
+      return 0;
+    });
+  }
+
+  if (cmd === "install") {
+    // 3DS: ask the console to offer installing a title from a URL. The owner opens Installer > Receive from the browser on
+    // the console and confirms there; nothing is downloaded before that.
+    const [url] = parseFlags(rest, []).rest;
+    if (!url) throw new Error("install needs <url>  (e.g. ndev install 192.168.1.20 http://192.168.1.10:8000/game.cia)");
+    return withClient(target, async (client, host) => {
+      if (client.info!.platform !== "3ds") throw new Error(`${host} is a ${client.info!.platform} console: only the 3DS has an installer`);
+      await client.installUrl(url);
+      console.log("Sent. Confirm on the 3DS (A) to download and install.");
       return 0;
     });
   }

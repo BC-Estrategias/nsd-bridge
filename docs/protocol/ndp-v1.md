@@ -109,6 +109,7 @@ Depois do AUTH, qualquer chave pareada pode **ver e apagar qualquer pareamento d
 | 0x0032 | FS_RENAME | ✔ (1.2.0) | move/renomeia um arquivo ou pasta (nunca sobrescreve) |
 | 0x0033 | FS_DELETE | M5 ✔ | **move** para a lixeira (nunca apaga de verdade) |
 | 0x0035 | FS_COPY | ✔ (1.3.0) | copia UM arquivo dentro do cartão, em passos, feita pelo console |
+| 0x0040 | INSTALL_URL | ✔ (1.8.0, só 3DS) | pede ao console que ofereça instalar um título de uma URL; o dono confirma no console |
 | 0x0034 | FS_PURGE | ✔ (1.2.2) | apaga **de verdade**, só o que está dentro de uma lixeira (ou esvazia a lixeira) |
 | 0x0040+ | LOG_* / CRASH_* | fase 3 | |
 | 0x8000–0xFFFF | reservado a extensões de plataforma | | |
@@ -162,6 +163,7 @@ ERR carrega, opcionalmente: `0x0001 detail` (str, texto humano curto, **informat
 | 0x0033 | entry | bytes | FS_LIST RES, **repetível**: `type u8 ‖ size u64 ‖ name utf-8` (ver §13) |
 | 0x0034 | type | u8 | FS_STAT RES: 1 = arquivo, 2 = diretório |
 | 0x0035 | size | u64 | FS_STAT RES: bytes |
+| 0x0065 | url | utf-8 | INSTALL_URL REQ: URL `http://` ou `https://`, ASCII imprimível sem espaços, até 1023 bytes |
 | 0x0036 | mtime | u64 | FS_STAT RES: segundos Unix UTC; **0 = desconhecido** |
 | 0x0037 | offset | u64 | FS_READ REQ (padrão 0) |
 | 0x0038 | length | u64 | FS_READ REQ (0 = até o fim do arquivo) |
@@ -335,6 +337,9 @@ Agent  → RES {written, sha256, replaced}       (ou ERR)
 - O trabalho por pedido é **limitado** (16 remoções). `more = 1` significa que ainda resta trabalho: o cliente DEVE repetir o mesmo `REQ` até receber `0`. Nada é lembrado entre pedidos (cada um recomeça do que está no disco), então uma queda de conexão no meio é segura. `purged` conta arquivos e pastas removidos neste pedido.
 - Links simbólicos não existem para o protocolo: uma pasta que contém um não pode ser esvaziada (`IO_ERROR`) e o alvo do link nunca é tocado. Falha do SO → `IO_ERROR`, o que restou continua lá. Plataforma sem `remove_dir` → `UNSUPPORTED_COMMAND` para pastas.
 - O servidor MCP **não** expõe esta operação (um assistente nunca apaga em definitivo); a CLI (`ndev purge`) e a página web sim.
+
+### INSTALL_URL (0x0040, agente ≥ 1.8.0, só 3DS)
+REQ: `url`. O agente valida (http/https, ASCII imprimível, sem espaços) e entrega ao console, que **só aceita enquanto a tela "Receber do navegador" do instalador está aberta** e, antes de baixar qualquer coisa, mostra a origem e o título e pede a confirmação do dono (A). RES vazio = o pedido foi recebido (não que foi instalado). Erros: `UNSUPPORTED_COMMAND` (DSi/outro), `BAD_REQUEST` (URL inválida), `BUSY` com `detail` (tela fechada, ou já há um pedido aguardando confirmação). Vale para conexões autenticadas e, quando o console serve a página sem pareamento, para a página também: a proteção é a tela aberta + a confirmação.
 
 ### FS_COPY (0x0035, agente ≥ 1.3.0)
 `REQ {path, new_path, copy_mode?}` → `RES {copied, total_size, more}`. Copia **um arquivo** dentro do cartão, **feita pelo console** (os dados não passam pelo cliente), em passos limitados (1 MiB por pedido). O destino só aparece no último passo: o console escreve em `<new_path>.ndp-tmp` e o **renomeia** no fim, então uma falha nunca deixa um destino pela metade. O cliente repete o pedido (com `copy_mode` 0) enquanto `more = 1`; a posição do passo é o tamanho do temporário (nada é guardado entre pedidos). O primeiro pedido DEVE levar `copy_mode = 1` (descarta um temporário de outra cópia, para nunca misturar arquivos); `copy_mode = 2` descarta a cópia parcial (cancelar/erro).

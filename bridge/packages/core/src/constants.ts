@@ -28,6 +28,7 @@ export const Command = {
   FS_DELETE: 0x0033,
   FS_PURGE: 0x0034,
   FS_COPY: 0x0035,
+  INSTALL_URL: 0x0040,
   PAIR_BEGIN: 0x0006,
   PAIR_REVEAL: 0x0007,
   PAIR_POLL: 0x0008,
@@ -130,6 +131,7 @@ export const Tag = {
   PAIR_NONCE: 0x0062,
   PAIR_STATE: 0x0063,
   PAIR_ENTRY: 0x0064,
+  URL: 0x0065,
 } as const;
 
 export type Mode = "READ_ONLY" | "DEVELOPMENT" | "FULL";
