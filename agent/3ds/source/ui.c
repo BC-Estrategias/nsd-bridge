@@ -29,7 +29,8 @@ static C2D_TextBuf g_tb;
 static bool g_ready, g_pt;
 
 enum { SCR_MAIN, SCR_LOG };
-static int g_screen = SCR_MAIN, g_sel = 0, g_log_off = 0;
+static int g_screen = SCR_MAIN, g_log_off = 0;
+static int g_sel = 1; /* starts on the row after Updates (IT_FOLDERS): a stray A never starts an install */
 
 void ui_init(void) {
   u8 lang = 0;
@@ -115,7 +116,7 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 }
 
 /* ---- main menu ---- */
-enum { IT_FOLDERS, IT_MODE, IT_PAIR, IT_WEB, IT_PAIRED, IT_UPDATE, IT_LOG, IT_EXIT, IT_COUNT };
+enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIR, IT_WEB, IT_PAIRED, IT_LOG, IT_EXIT, IT_COUNT };
 
 static const char *item_name(int i) {
   switch (i) {
