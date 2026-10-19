@@ -17,6 +17,8 @@
 
 Ou baixe o `.cia` / `.3dsx` direto da [última versão](https://github.com/BC-Estrategias/nsd-bridge/releases/latest). Dos dois jeitos, o arquivo sempre corresponde à versão publicada no momento — sem precisar acompanhar número de versão.
 
+**Atualizações (3DS):** depois de instalado, o app confere no GitHub se há uma versão mais nova alguns segundos após abrir e, se houver, a primeira linha do menu da tela de baixo oferece instalar — só quando você apertar. (Crie `/3ds/nintendo-dev-agent/config/no-update-check` para desligar a checagem automática.)
+
 **DSi** — precisa do [TWiLight Menu++](https://github.com/DS-Homebrew/TWiLightMenu) instalado no cartão SD. Pegue o `nsd-bridge-dsi-vX.Y.Z.nds` da [última versão](https://github.com/BC-Estrategias/nsd-bridge/releases/latest), copie pra qualquer lugar que o navegador de arquivos do TWiLight Menu++ alcance (a pasta própria `/nsd-bridge`, criada na primeira execução, funciona) e abra por lá. Não existe instalação por QR code pra homebrew de DS; essa é a única cópia manual que você vai precisar fazer — toda atualização depois disso pode ir direto pelo Wi-Fi (veja abaixo).
 
 ## Três formas de entrar, um só app no console

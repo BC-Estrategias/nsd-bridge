@@ -17,6 +17,8 @@
 
 Or grab the `.cia` / `.3dsx` straight from the [latest release](https://github.com/BC-Estrategias/nsd-bridge/releases/latest). Either way, the file always matches whatever is currently released — no version number to keep track of.
 
+**Updates (3DS):** once installed, the app checks GitHub for a newer release a few seconds after it starts and, if there is one, the first row of its bottom-screen menu offers to install it — only when you press it. (Create `/3ds/nintendo-dev-agent/config/no-update-check` to turn the automatic check off.)
+
 **DSi** — requires [TWiLight Menu++](https://github.com/DS-Homebrew/TWiLightMenu) installed on the SD card. Grab `nsd-bridge-dsi-vX.Y.Z.nds` from the [latest release](https://github.com/BC-Estrategias/nsd-bridge/releases/latest), copy it anywhere TWiLight Menu++'s file browser reaches (its own `/nsd-bridge` folder, once created by a first run, works), and launch it from there. No QR install for DS homebrew; this one manual copy is the only one you'll ever need — every later update can be pushed straight to the console over Wi-Fi (see below).
 
 ## Three ways in, one console app
