@@ -4,6 +4,7 @@ x25519.js
 auth.js
 client.js
 util.js
+update.js
 i18n.js
 ui.js
 session.js

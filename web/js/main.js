@@ -11,7 +11,7 @@
   // ---------------------------------------------------------------------------------------------- preferences
   const PREFS_KEY = "ndev.prefs";
   const coarse = (() => { try { return matchMedia("(pointer: coarse)").matches || innerWidth < 720; } catch (_) { return false; } })();
-  const DEFAULTS = { showHidden: false, confirmDelete: true, backupOnSave: true, theme: "auto", openOnClick: coarse };
+  const DEFAULTS = { showHidden: false, confirmDelete: true, backupOnSave: true, theme: "auto", openOnClick: coarse, checkUpdates: true };
   const prefs = Object.assign({}, DEFAULTS);
   try { const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); for (const k of Object.keys(DEFAULTS)) if (typeof saved[k] === typeof DEFAULTS[k]) prefs[k] = saved[k]; } catch (_) { /* defaults */ }
   Object.defineProperty(prefs, "set", {
@@ -138,6 +138,33 @@
   }
 
   // ---------------------------------------------------------------------------------------------- layout
+  function copyText(text) {
+    // plain http has no navigator.clipboard: fall back to a hidden textarea
+    try {
+      if (navigator.clipboard && globalThis.isSecureContext) { navigator.clipboard.writeText(text); return true; }
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.append(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (_) { return false; }
+  }
+
+  /** "A new version exists": the DSi is updated from a computer (`ndev update`), the 3DS from its own menu. */
+  function updateBanner(version) {
+    const dsi = S.info.platform === "dsi";
+    const cmd = `ndev update ${location.hostname}`;
+    const dismiss = h("button", { type: "button", onclick: () => { NDP.update.dismiss(version); layout(); }, text: t("upd.dismiss") });
+    if (!dsi) return h("div.banner.info", null, icon("help"), h("p.grow", { text: t("upd.3ds", version, "v" + S.info.agentVersion) }), dismiss);
+    return h("div.banner.info", null, icon("help"),
+      h("div.grow", null, h("p", { text: t("upd.dsi", version, "v" + S.info.agentVersion) }), h("p", null, h("code", { text: cmd }))),
+      h("button", { type: "button", onclick: () => { if (copyText(cmd)) toast(t("upd.copied"), "ok", 2500); }, text: t("upd.copy") }), dismiss);
+  }
+
   function layout() {
     if (!app) return;
     const ready = S.state === "ready";
@@ -150,6 +177,10 @@
     tabsNav.hidden = !!blocking;
 
     banner.replaceChildren();
+    if (ready && prefs.checkUpdates && S.info) {
+      const v = NDP.update.newerThan(S.info.agentVersion);
+      if (v) banner.append(updateBanner(v));
+    }
     if (S.state === "offline" && everReady) {
       banner.append(h("div.banner.error", null, icon("warn"), h("p.grow", { text: t("connectionLost") }), h("button", { onclick: () => S.connect(), text: t("retryNow") })));
     }
@@ -192,6 +223,7 @@
     layout();
     let filesStarted = false;
     S.on("state", (state) => {
+      if (state === "ready" && prefs.checkUpdates) NDP.update.fetchLatest().then(layout);
       layout();
       if (state === "ready") {
         if (!filesStarted) { filesStarted = true; NDP.files.start(); } else NDP.files.refresh();

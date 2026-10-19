@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const WEB = fileURLToPath(new URL("../../../../web/js/", import.meta.url));
-for (const f of ["util.js", "i18n.js"]) await import(pathToFileURL(WEB + f).href);
+for (const f of ["util.js", "update.js", "i18n.js"]) await import(pathToFileURL(WEB + f).href);
 const NDP = (globalThis as any).NDP;
 const U = NDP.util;
 
@@ -173,4 +173,35 @@ test("i18n: tp() picks the platform override when one exists, and falls back oth
   assert.equal(I.tp("faq.what.a", undefined), I.t("faq.what.a"));
   assert.equal(I.tp("faq.keys.a", "made-up-platform"), I.t("faq.keys.a"));
   I.setLang("auto");
+});
+
+test("update: the page compares versions, caches GitHub's answer, and only trusts a real release", async () => {
+  assert.equal(U.versionNewer("v1.7.2", "1.7.1"), true);
+  assert.equal(U.versionNewer("1.10.0", "1.9.9"), true);
+  assert.equal(U.versionNewer("1.7.1", "1.7.1"), false);
+  assert.equal(U.versionNewer("1.7.0", "1.7.1"), false);
+  assert.equal(U.versionNewer("junk", "1.7.1"), false);
+
+  const store = new Map<string, string>();
+  (globalThis as any).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+  let calls = 0, body: any = { tag_name: "v1.7.2", draft: false, prerelease: false };
+  (globalThis as any).fetch = async () => { calls++; return { ok: true, json: async () => body }; };
+  const up = NDP.update;
+
+  assert.equal(await up.fetchLatest(), "v1.7.2");
+  assert.equal(up.newerThan("1.7.1"), "v1.7.2");
+  assert.equal(up.newerThan("1.7.2"), "", "an up-to-date console sees nothing");
+  assert.equal(await up.fetchLatest(), "v1.7.2");
+  assert.equal(calls, 1, "the second ask is served from the cache (GitHub rate limit)");
+
+  up.dismiss("v1.7.2");
+  assert.equal(up.newerThan("1.7.1"), "", "a dismissed version stays quiet");
+
+  store.clear();
+  body = { tag_name: "v9.9.9", draft: false, prerelease: true };
+  assert.equal(await up.fetchLatest(), null, "a pre-release is never offered");
+  body = { tag_name: "latest", draft: false, prerelease: false };
+  assert.equal(await up.fetchLatest(), null, "an odd tag is ignored");
+  (globalThis as any).fetch = async () => { throw new Error("offline"); };
+  assert.equal(await up.fetchLatest(), null, "no network: no banner, no error");
 });

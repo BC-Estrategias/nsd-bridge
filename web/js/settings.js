@@ -139,7 +139,8 @@
       pref(t("openOnClick"), t("openOnClickHint"), toggle("openOnClick")),
       pref(t("showHidden"), t("showHiddenHint"), toggle("showHidden")),
       pref(t("confirmDelete"), t("confirmDeleteHint"), toggle("confirmDelete")),
-      pref(t("backupOnSave"), t("backupOnSaveHint"), toggle("backupOnSave")));
+      pref(t("backupOnSave"), t("backupOnSaveHint"), toggle("backupOnSave")),
+      pref(t("upd.pref"), t("upd.prefHint"), toggle("checkUpdates", () => { if (NDP.prefs.checkUpdates) NDP.update.fetchLatest().then(() => NDP.main.rerender()); else NDP.main.rerender(); })));
 
     fill(root, h("div.cards", null, connection, consoleCard, folders, pairing, pairedDevicesCard, prefs));
   }

@@ -8,6 +8,7 @@
  * --read-root PATH (repeatable) replaces the default readable folder ("/").
  * --access-file FILE loads the owner's folder list (what the console UI edits) and uses it as the policy.
  * --web-port N serves the embedded web page and its WebSocket on that port (0 = ephemeral; without the flag the page is off).
+ * --platform NAME reports that platform in HELLO (default "host"; tests use "dsi"/"3ds").
  * --web-open (with --auth required) serves the page's WebSocket without pairing; the TCP port still requires it.
  * --auth required turns on pairing/HMAC (spec §4); --keys-file persists the paired keys;
  * --pair-code opens the pairing window at start with that code (tests; a real console shows a random one). */
@@ -104,6 +105,7 @@ int main(int argc, char **argv) {
   int custom_policy = 0, custom_read = 0;
   const char *access_file = NULL;
   int web_on = 0, web_port = 0, web_open = 0;
+  const char *platform_name = "host"; /* --platform dsi lets tests exercise platform-specific CLI behaviour */
   static ndp_web_assets web_assets;
   static ndp_access access;
   const char *pair_code = NULL;
@@ -144,6 +146,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--pair-ms") && i + 1 < argc) pair_ms = (unsigned)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--pair-open")) pair_open = 1;
     else if (!strcmp(argv[i], "--web-open")) web_open = 1;
+    else if (!strcmp(argv[i], "--platform") && i + 1 < argc) platform_name = argv[++i];
     else if (!strcmp(argv[i], "--pair-approve") && i + 1 < argc) {
       const char *a = argv[++i];
       approve = !strcmp(a, "auto") ? 1 : !strcmp(a, "deny") ? 2 : 0;
@@ -201,6 +204,7 @@ int main(int argc, char **argv) {
   plat.now_ms = now_ms;
   plat.log = log_line;
   plat.keys_changed = keys_changed;
+  cfg.platform = platform_name; /* after the options are parsed */
   ndp_server_init(&srv, &plat, &cfg);
   if (g_keys_file) {
     int lr = ndp_keystore_load_file(&keys, g_keys_file);

@@ -160,5 +160,18 @@
     };
   }
 
-  NDP.util = { blobCollector, inside, join, parent, basename, ext, crumbs, formatSize, formatRate, formatEta, isImage, isTextName, imageMime, looksBinary, uniqueName, nameProblem, sortEntries, writeProtected, accessOf, trashRootOf, protectedZonesFor };
+  /** "v1.7.2" / "1.7.2" -> [1,7,2], or null. */
+  function parseVersion(v) {
+    const m = /^v?(\d{1,4})\.(\d{1,4})\.(\d{1,4})$/.exec(String(v));
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  }
+  /** True when `candidate` is a newer x.y.z than `installed` (an unparsable version is never newer). */
+  function versionNewer(candidate, installed) {
+    const a = parseVersion(candidate), b = parseVersion(installed);
+    if (!a || !b) return false;
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+    return false;
+  }
+
+  NDP.util = { versionNewer, parseVersion, blobCollector, inside, join, parent, basename, ext, crumbs, formatSize, formatRate, formatEta, isImage, isTextName, imageMime, looksBinary, uniqueName, nameProblem, sortEntries, writeProtected, accessOf, trashRootOf, protectedZonesFor };
 })();

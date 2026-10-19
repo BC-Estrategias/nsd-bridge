@@ -554,7 +554,7 @@ static void http_reply(ndp_http_conn *h, int code, const char *reason, const cha
                    "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %lu\r\n%s"
                    "Cache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n"
                    "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                   "img-src blob: data:; connect-src ws:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n"
+                   "img-src blob: data:; connect-src ws: https://api.github.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n"
                    "Connection: close\r\n\r\n",
                    code, reason, ctype, (unsigned long)body_len, extra ? extra : "");
   h->resp_len = n > 0 && (size_t)n < sizeof h->resp ? (size_t)n : 0;

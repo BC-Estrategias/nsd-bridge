@@ -5,7 +5,7 @@ import { hostname } from "node:os";
 import { createInterface } from "node:readline/promises";
 import {
   DEFAULT_PORT, KeyStore, LABEL_MAX, NdpClient, NdpRemoteError, NdpTransportError, PathInvalidError, codeDecode, PairingRefusedError,
-  discover,
+  discover, downloadAsset, fetchLatestRelease, isNewerVersion, pickDsiAsset,
 } from "@ndev/core";
 
 const USAGE = `ndev — Nintendo Dev Bridge (CLI)
@@ -35,6 +35,10 @@ Usage:
   ndev put   <host[:port]> --text "content" <remote> [--replace] [--backup]
                                                   upload (temp file + verify + rename on the device);
                                                   refuses to overwrite unless --replace
+  ndev update <host[:port]> [--force] [--file nsd-bridge-dsi-vX.Y.Z.nds]
+                                                  DSi: download the newest DSi build from GitHub (SHA-256 checked) and send it
+                                                  to /nsd-bridge/ (needs DEVELOPMENT mode: press X on the DSi). The 3DS updates
+                                                  itself from its Updates menu.
   ndev mkdir <host[:port]> <path>                 create a directory (the parent must exist)
   ndev mv    <host[:port]> <from> <to>            move/rename a file or folder (never overwrites; also restores from the trash)
   ndev purge <host[:port]> <path>...              PERMANENTLY delete items inside a trash folder (<root>/.ndp-trash/...), or
@@ -198,7 +202,7 @@ async function main(argv: string[]): Promise<number> {
       client.close();
     }
   }
-  if (!["hello", "ping", "info", "access", "ls", "stat", "cat", "get", "put", "mkdir", "mv", "cp", "rm", "purge"].includes(cmd) || !target) {
+  if (!["hello", "ping", "info", "access", "ls", "stat", "cat", "get", "put", "mkdir", "mv", "cp", "rm", "purge", "update"].includes(cmd) || !target) {
     console.error(USAGE);
     return 2;
   }
@@ -228,6 +232,44 @@ async function main(argv: string[]): Promise<number> {
       for (const r of a.readRoots) console.log(`  ${r}${a.writeRoots.includes(r) ? "   (also writable)" : ""}`);
       console.log(a.mode === "READ_ONLY" ? "writable folders (writes are OFF: press X on the console):" : "writable folders:");
       for (const r of a.writeRoots) console.log(`  ${r}`);
+      return 0;
+    });
+  }
+
+  if (cmd === "update") {
+    // The DSi cannot update itself (its Wi-Fi has no HTTPS, which GitHub requires), so this computer downloads the newest
+    // DSi build, checks it, and sends it over the bridge. The 3DS updates itself from its own Updates menu.
+    const { on, text } = parseFlags(rest, [], ["--force"], ["--file"]);
+    return withClient(target, async (client, host) => {
+      const info = client.info!;
+      if (info.platform !== "dsi") {
+        console.log(`${host} is a ${info.platform} console. The 3DS updates itself: open "Updates" in its menu (a few seconds after the app opens it offers the new version).`);
+        return 0;
+      }
+      let bytes: Uint8Array, version: string;
+      const file = text.get("--file");
+      if (file) {
+        const { readFileSync } = await import("node:fs");
+        bytes = new Uint8Array(readFileSync(file));
+        const m = /nsd-bridge-dsi-(v\d+\.\d+\.\d+)\.nds$/.exec(file);
+        if (!m) throw new Error("--file must be named nsd-bridge-dsi-vX.Y.Z.nds");
+        version = m[1] as string;
+      } else {
+        const asset = pickDsiAsset(await fetchLatestRelease());
+        if (!asset) throw new Error("no usable DSi build in the latest release");
+        if (!on.has("--force") && !isNewerVersion(asset.version, info.agentVersion)) {
+          console.log(`${host} runs v${info.agentVersion}; the latest release is ${asset.version}. Already up to date (use --force to send it anyway).`);
+          return 0;
+        }
+        console.log(`${host} runs v${info.agentVersion}; downloading ${asset.version} (${(asset.size / 1024).toFixed(0)} KiB)...`);
+        bytes = await downloadAsset(asset);
+        version = asset.version;
+      }
+      if (info.mode === "READ_ONLY") throw new Error("the DSi is READ-ONLY: press X on its screen first, then run this again");
+      const remote = `/nsd-bridge/nsd-bridge-dsi-${version}.nds`;
+      const r = await client.writeBytes(remote, bytes, { overwrite: false, backup: false });
+      console.log(`sent to ${remote}: ${r.written} bytes in ${(r.ms / 1000).toFixed(1)} s (checked by the console)`);
+      console.log(`On the DSi: close the app, open ${remote} from TWiLight Menu++, and the new version runs. The old file can stay or be deleted from the page.`);
       return 0;
     });
   }
