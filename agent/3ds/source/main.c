@@ -15,6 +15,7 @@
 
 #include "access_ui.h"
 #include "alog.h"
+#include "ui.h"
 #include "ndp/ndp_access_file.h"
 #include "ndp/ndp_keystore_file.h"
 #include "ndp/ndp_posix_fs.h"
@@ -63,7 +64,9 @@
 #define BOT_COLS 39
 #define BOT_ROWS 27
 
+#ifdef AGENT_TEXT_UI
 static PrintConsole g_top, g_bot;
+#endif
 static ndp_server g_srv; /* ~135 KB of buffers inside: static, not on the stack */
 
 /* Filesystem: the SD card ("sdmc:"), read-only. Requests that touch the agent's own folder flush the
@@ -420,6 +423,8 @@ static bool service_network(uint64_t now) {
   return changed;
 }
 
+#ifdef AGENT_TEXT_UI
+
 static void hms(char *out, size_t cap, uint64_t ms) {
   unsigned long s = (unsigned long)(ms / 1000);
   snprintf(out, cap, "%02lu:%02lu:%02lu", s / 3600, (s / 60) % 60, s % 60);
@@ -537,17 +542,91 @@ static void draw(uint64_t now) {
   gspWaitForVBlank();
 }
 
+#else /* graphical UI */
+
+static char g_sd_free[24] = "";
+
+/* Free space on the SD card, as text for the info bar. The OS reads the FAT for this (slow on a big card), so it is
+ * done at start-up and when the person comes back from a sub-screen, never while a computer waits. */
+static void refresh_sd_free(void) {
+  FS_ArchiveResource res;
+  if (R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&res))) {
+    double gib = (double)res.clusterSize * res.freeClusters / (1024.0 * 1024.0 * 1024.0);
+    snprintf(g_sd_free, sizeof g_sd_free, "%.1f GiB", gib);
+  }
+}
+
+static void build_model(ui_model *m, uint64_t now) {
+  int i;
+  memset(m, 0, sizeof *m);
+  m->version = NDP_AGENT_VERSION;
+  m->net = g_listening ? 3 : !g_wifi ? 1 : g_err[0] ? 2 : 0;
+  m->err = g_err;
+  if (g_listening) {
+    struct in_addr ia;
+    ia.s_addr = g_ip;
+    snprintf(m->ip, sizeof m->ip, "%s", inet_ntoa(ia));
+  }
+  m->port = (unsigned)g_srv.port ? (unsigned)g_srv.port : (unsigned)AGENT_PORT;
+  m->web_port = (unsigned)g_srv.web_port;
+  m->web_on = g_web_on;
+  m->web_up = g_web_listening;
+  m->web_peer = g_srv.web_client_fd >= 0 ? g_srv.web_peer : "";
+  m->bridge_peer = g_srv.client_fd >= 0 ? g_srv.peer : "";
+  m->read_only = g_srv.agent_cfg.mode == NDP_MODE_READ_ONLY;
+  m->mode_name = ndp_mode_name(g_srv.agent_cfg.mode);
+  m->open_folders = g_access.count;
+  for (i = 0; i < g_access.count; i++) {
+    if (g_access.e[i].level == NDP_LVL_WRITE) m->writable_folders++;
+    if (strcmp(g_access.e[i].path, "/") == 0) m->whole_sd = true;
+  }
+  m->auth_required = AGENT_AUTH_REQUIRED;
+  m->paired = g_srv.keys.count;
+  if (AGENT_AUTH_REQUIRED) {
+    uint32_t left = ndp_server_pairing_remaining_ms(&g_srv);
+    if (ndp_server_pair2_pending(&g_srv)) {
+      int rep;
+      m->pairing = 2;
+      m->sas = (unsigned)g_srv.pairing.p2_sas;
+      m->p2_peer = g_srv.pairing.p2_peer;
+      m->p2_label = g_srv.pairing.p2_label;
+      rep = ndp_keystore_replace_target(&g_srv.keys, g_srv.pairing.p2_label);
+      m->p2_replaces = rep >= 0 ? g_srv.keys.keys[rep].label : "";
+    } else if (left > 0) {
+      m->pairing = 1;
+      m->left_s = (left + 999) / 1000;
+      ndp_code_encode(g_srv.pairing.code, m->code);
+    }
+    m->forget_armed = g_forget_armed_until > now;
+  }
+  m->keys_warn = g_keys_dirty_warn;
+  snprintf(m->sd_free, sizeof m->sd_free, "%s", g_sd_free);
+  m->uptime_s = (unsigned long)((now - g_start_ms) / 1000);
+  m->requests = (unsigned long)g_srv.requests;
+}
+
+static void draw(uint64_t now) {
+  ui_model m;
+  build_model(&m, now);
+  ui_draw(&m);
+}
+#endif /* AGENT_TEXT_UI */
+
 int main(void) {
   ndp_agent_config cfg;
   ndp_server_platform plat;
   uint64_t last_draw = 0;
-  bool draw_pending = false, is_new3ds = false;
+  bool draw_pending = false, draw_now = false, is_new3ds = false;
   Result r;
 
   osSetSpeedupEnable(true);
   gfxInitDefault();
+#ifdef AGENT_TEXT_UI
   consoleInit(GFX_TOP, &g_top);
   consoleInit(GFX_BOTTOM, &g_bot);
+#else
+  ui_init();
+#endif
   alog_init();
   g_start_ms = now_ms(NULL);
 
@@ -624,10 +703,14 @@ int main(void) {
     ndp_server_set_keys(&g_srv, &g_keys);
   }
 
+#ifndef AGENT_TEXT_UI
+  refresh_sd_free();
+#endif
   draw(now_ms(NULL));
   while (aptMainLoop()) {
     uint64_t now;
     bool changed;
+#ifdef AGENT_TEXT_UI
     hidScanInput();
     if (!access_ui_active() && ndp_server_pair2_pending(&g_srv) && (hidKeysDown() & (KEY_A | KEY_B))) {
       int yes = (hidKeysDown() & KEY_A) != 0;
@@ -669,6 +752,60 @@ int main(void) {
       draw_pending = true;
     }
 
+#else
+    hidScanInput();
+    {
+      touchPosition tp;
+      u32 down = hidKeysDown(), held = hidKeysHeld();
+      bool redraw = false;
+      memset(&tp, 0, sizeof tp);
+      if (held & KEY_TOUCH) hidTouchRead(&tp);
+      if (access_ui_active()) {
+        /* the folder editor owns the buttons and the touch screen while it is open */
+        if (access_ui_handle(down) || access_ui_touch(down, held, &tp)) redraw = true;
+        if (!access_ui_active()) { refresh_sd_free(); redraw = true; }
+      } else {
+        ui_model um;
+        ui_action act;
+        uint64_t t = now_ms(NULL);
+        build_model(&um, t);
+        act = ui_handle(down, held, &tp, &um, &redraw);
+        switch (act) {
+          case UI_FOLDERS: access_ui_open(&g_access, access_changed); break;
+          case UI_MODE: {
+            ndp_mode next = g_srv.agent_cfg.mode == NDP_MODE_READ_ONLY ? NDP_MODE_DEVELOPMENT : NDP_MODE_READ_ONLY;
+            ndp_server_set_mode(&g_srv, next);
+            alog("Mode -> %s", ndp_mode_name(next));
+            break;
+          }
+          case UI_PAIR: open_pairing(); break;
+          case UI_WEB:
+            g_web_on = !g_web_on;
+            alog("Web page -> %s", g_web_on ? "on" : "off");
+            sync_web();
+            break;
+          case UI_FORGET:
+            if (!AGENT_AUTH_REQUIRED) break;
+            if (g_forget_armed_until > t) {
+              ndp_server_clear_keys(&g_srv);
+              g_forget_armed_until = 0;
+            } else {
+              g_forget_armed_until = t + FORGET_CONFIRM_MS;
+            }
+            break;
+          case UI_PAIR_YES:
+          case UI_PAIR_NO:
+            alog(act == UI_PAIR_YES ? "Pairing approved" : "Pairing refused");
+            (void)ndp_server_pair2_decide(&g_srv, act == UI_PAIR_YES);
+            break;
+          case UI_EXIT: goto quit;
+          default: break;
+        }
+        if (act != UI_NONE) redraw = true;
+      }
+      if (redraw) { draw_pending = true; draw_now = true; }
+    }
+#endif
     now = now_ms(NULL);
     changed = service_network(now);
     if (g_listening) {
@@ -695,15 +832,19 @@ int main(void) {
       g_last_flush_ms = now;
     }
     if (changed || alog_dirty()) draw_pending = true;
-    if ((draw_pending && now - last_draw >= DRAW_MIN_MS) || now - last_draw >= DRAW_MAX_MS) {
+    if ((draw_pending && (draw_now || now - last_draw >= DRAW_MIN_MS)) || now - last_draw >= DRAW_MAX_MS) {
       alog_clear_dirty();
-      if (access_ui_active()) access_ui_draw(&g_top, &g_bot);
+      if (access_ui_active()) access_ui_draw(NULL, NULL);
       else draw(now);
       draw_pending = false;
+      draw_now = false;
       last_draw = now;
     }
   }
 
+#ifndef AGENT_TEXT_UI
+quit:
+#endif
   alog("Exiting");
   ndp_server_close(&g_srv);
   if (g_ndm_locked) {
@@ -718,6 +859,9 @@ int main(void) {
   ndmuExit();
   acExit();
   alog_exit();
+#ifndef AGENT_TEXT_UI
+  ui_exit();
+#endif
   gfxExit();
   return 0;
 }

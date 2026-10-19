@@ -9,6 +9,9 @@
 #include <sys/stat.h>
 
 #include "alog.h"
+#ifndef AGENT_TEXT_UI
+#include "ui.h"
+#endif
 
 #define C_RESET "\x1b[0m"
 #define C_GREEN "\x1b[32;1m"
@@ -18,7 +21,11 @@
 
 #define MAX_ROWS 256      /* folders shown per directory (row 0 is the folder itself) */
 #define NAME_MAX_UI 128   /* longer names are skipped and counted */
+#ifdef AGENT_TEXT_UI
 #define VISIBLE_ROWS 24
+#else
+#define VISIBLE_ROWS UI_LIST_ROWS
+#endif
 
 static struct {
   bool active;
@@ -158,6 +165,7 @@ bool access_ui_handle(u32 k) {
   return true;
 }
 
+#ifdef AGENT_TEXT_UI
 void access_ui_draw(PrintConsole *top, PrintConsole *bottom) {
   int i, end;
   consoleSelect(top);
@@ -192,3 +200,73 @@ void access_ui_draw(PrintConsole *top, PrintConsole *bottom) {
   gfxSwapBuffers();
   gspWaitForVBlank();
 }
+#else
+/* Touch: tap a row to select it, tap the selected row's tag to change its access, tap its name to open it, tap
+ * the title bar to go up, drag to scroll. */
+bool access_ui_touch(u32 down, u32 held, const touchPosition *tp) {
+  int step, r, max;
+  if (!g.active) return false;
+  step = ui_drag_rows(down, held, tp);
+  if (step) {
+    max = g.n > VISIBLE_ROWS ? g.n - VISIBLE_ROWS : 0;
+    g.top += step;
+    if (g.top < 0) g.top = 0;
+    if (g.top > max) g.top = max;
+    if (g.sel < g.top) g.sel = g.top;
+    if (g.sel >= g.top + VISIBLE_ROWS) g.sel = g.top + VISIBLE_ROWS - 1;
+    return true;
+  }
+  if (!(down & KEY_TOUCH)) return false;
+  if (tp->py >= 20 && tp->py < 40) return access_ui_handle(KEY_B);
+  r = ui_row_at(tp->py);
+  if (r < 0 || g.top + r >= g.n) return false;
+  if (g.top + r != g.sel) { g.sel = g.top + r; return true; }
+  if (tp->px < 64) cycle_selected();
+  else if (g.sel > 0) return access_ui_handle(KEY_A);
+  return true;
+}
+
+void access_ui_draw(PrintConsole *top, PrintConsole *bottom) {
+  int i, end;
+  char info[NDP_PATH_MAX + 8];
+  (void)top;
+  (void)bottom;
+  ui_begin();
+  ui_scene_top(UI_RGB(0x2b, 0x2d, 0x33));
+  ui_rect(0, 0, 400, 24, UI_RGB(0x1b, 0x1c, 0x20));
+  ui_text(8, 3, 0.6f, UI_RGB(0x6a, 0xc8, 0xf0), 0, "%s", UI_T("Open folders", "Pastas liberadas"));
+  ui_text(392, 5, 0.45f, UI_RGB(0x9a, 0xa0, 0xaa), UI_RIGHT, "%s", UI_T("what the Bridge may use", "o que o Bridge pode usar"));
+  ui_text(12, 36, 0.5f, UI_RGB(0xff, 0xff, 0xff), 0, "%.52s", g.path);
+  ui_text(12, 70, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "[R] %s    [RW] %s", UI_T("read", "leitura"), UI_T("read + write", "leitura e escrita"));
+  ui_text(12, 86, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "(R) %s", UI_T("open through a parent folder", "aberta por uma pasta pai"));
+  ui_text(12, 102, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "! %s", UI_T("system folder: never writable", "pasta do sistema: nunca gravavel"));
+  ui_text(12, 128, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "%s", UI_T("Writes also need Development mode (X).", "Escrever tambem exige o modo Desenvolvimento (X)."));
+  ui_text(12, 144, 0.42f, UI_RGB(0x9a, 0xa0, 0xaa), 0, "%s", UI_T("The agent's own folder is always open.", "A pasta do proprio agente esta sempre aberta."));
+  if (g.skipped) ui_text(12, 168, 0.42f, UI_RGB(0xf0, 0x5a, 0x50), 0, "%d %s", g.skipped, UI_T("folder(s) not shown (too many / long name)", "pasta(s) nao exibida(s) (muitas / nome longo)"));
+  if (g.msg[0]) ui_text(12, 190, 0.5f, g.msg_bad ? UI_RGB(0xf0, 0x5a, 0x50) : UI_RGB(0x6b, 0xd0, 0x6b), 0, "%.60s", g.msg);
+  ui_rect(0, 220, 400, 20, UI_RGB(0x3f, 0x41, 0x47));
+
+  snprintf(info, sizeof info, "%s", g.path);
+  ui_scene_bottom(UI_RGB(0xe8, 0xe8, 0xe8));
+  ui_bottom_chrome(info, UI_T("< Up (B)    tag: change    name: open", "< Subir (B)    tag: acesso    nome: abrir"),
+                   UI_T("A: open  Y: access  B: back  START: close", "A: abrir  Y: acesso  B: voltar  START: fechar"));
+  end = g.top + VISIBLE_ROWS < g.n ? g.top + VISIBLE_ROWS : g.n;
+  for (i = g.top; i < end; i++) {
+    char path[NDP_PATH_MAX + 1];
+    ndp_level exp, eff;
+    const char *tag;
+    float y = (float)(UI_LIST_Y + (i - g.top) * UI_ROW_H);
+    const uint32_t ink = UI_RGB(0x22, 0x22, 0x22);
+    row_path(i, path, sizeof path);
+    eff = ndp_access_level(g.list, path, &exp);
+    if (exp != NDP_LVL_NONE) tag = exp == NDP_LVL_WRITE ? "[RW]" : "[R]";
+    else if (eff != NDP_LVL_NONE) tag = eff == NDP_LVL_WRITE ? "(RW)" : "(R)";
+    else tag = "[ ]";
+    if (i == g.sel) ui_rect(0, y, 320, UI_ROW_H, UI_RGB(0xb4, 0xb4, 0xb4));
+    ui_text(8, y + 4, 0.5f, exp != NDP_LVL_NONE ? UI_RGB(0x1b, 0x7a, 0x2b) : ink, 0, "%s", tag);
+    ui_text(60, y + 4, 0.5f, ink, 0, "%.34s%s", i == 0 ? UI_T(". (this folder)", ". (esta pasta)") : g.names[i],
+            !ndp_access_allowed(path, NDP_LVL_WRITE) ? "  !" : "");
+  }
+  ui_end();
+}
+#endif

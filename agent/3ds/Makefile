@@ -29,6 +29,10 @@ CFLAGS  := -g -Wall -Wextra -O2 -mword-relocations -ffunction-sections -std=gnu9
 ifeq ($(NDEV_DEV),1)
 CFLAGS  += -DAGENT_START_MODE=NDP_MODE_DEVELOPMENT
 endif
+# NDEV_TEXT_UI=1 builds the old text-console UI instead of the graphical (citro2d) one
+ifeq ($(NDEV_TEXT_UI),1)
+CFLAGS  += -DAGENT_TEXT_UI
+endif
 # the main thread's stack is small (32 KB by default): no single function may take more than 4 KB of it
 CFLAGS  += -Werror=stack-usage=4096
 CFLAGS  += $(INCLUDE) -D__3DS__
@@ -36,7 +40,7 @@ CFLAGS  += $(INCLUDE) -D__3DS__
 ASFLAGS := -g $(ARCH)
 LDFLAGS  = -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS    := -lctru -lm
+LIBS    := -lcitro2d -lcitro3d -lctru -lm
 LIBDIRS := $(CTRULIB)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
