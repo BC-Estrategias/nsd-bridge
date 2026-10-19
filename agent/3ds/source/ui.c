@@ -273,8 +273,14 @@ static void draw_top(const ui_model *m) {
     ui_text(200, 200, 0.4f, COL_DIM, UI_CENTER, "%.30s  (%.20s)", m->p2_label, m->p2_peer);
   } else if (m->pairing == 1) {
     ui_text(200, 156, 0.5f, COL_YELLOW, UI_CENTER, "%s (%lu s)", UI_T("PAIRING OPEN", "PAREAMENTO ABERTO"), (unsigned long)m->left_s);
-    ui_text(200, 174, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("On the page click Pair, or: ndev pair <ip>", "Na página, clique em Parear, ou: ndev pair <ip>"));
-    ui_text(200, 190, 0.5f, COL_CYAN, UI_CENTER, "%s: %s", UI_T("code", "código"), m->code);
+    if (m->web_open) {
+      /* the browser does not pair: this window is for the CLI and the MCP */
+      ui_text(200, 174, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("On the computer run: ndev pair <ip>", "No computador, rode: ndev pair <ip>"));
+      ui_text(200, 190, 0.45f, COL_CYAN, UI_CENTER, "%s: %s", UI_T("or ndev pair --code", "ou ndev pair --code"), m->code);
+    } else {
+      ui_text(200, 174, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("On the page click Pair, or: ndev pair <ip>", "Na página, clique em Parear, ou: ndev pair <ip>"));
+      ui_text(200, 190, 0.5f, COL_CYAN, UI_CENTER, "%s: %s", UI_T("code", "código"), m->code);
+    }
   } else if (m->forget_armed) {
     ui_text(200, 170, 0.5f, COL_RED, UI_CENTER, "%s", UI_T("Select it again to forget ALL paired devices", "Selecione de novo para esquecer TODOS os dispositivos"));
   }
