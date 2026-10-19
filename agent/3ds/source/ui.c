@@ -117,9 +117,9 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
   return 0;
 }
 
-/* ---- the screens: main menu -> MCP pairing -> paired devices (B goes back one level) ---- */
-enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_WEB, IT_MCP, IT_LOG, IT_EXIT, IT_COUNT };
-enum { SP_PAIR, SP_DEVICES, SP_COUNT };
+/* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
+enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIRING, IT_LOG, IT_EXIT, IT_COUNT };
+enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
 
 int ui_arg(void) { return g_arg; }
 
@@ -128,8 +128,7 @@ static const char *item_name(int i) {
     case IT_UPDATE: return UI_T("Updates", "Atualizações");
     case IT_FOLDERS: return UI_T("Open folders", "Pastas liberadas");
     case IT_MODE: return UI_T("Mode", "Modo");
-    case IT_WEB: return UI_T("Web page", "Página web");
-    case IT_MCP: return UI_T("MCP pairing", "Pareamento MCP");
+    case IT_PAIRING: return UI_T("Pairing", "Pareamento");
     case IT_LOG: return UI_T("Activity log", "Log de atividade");
     default: return UI_T("Exit", "Sair");
   }
@@ -161,14 +160,14 @@ static ui_action activate(const ui_model *m) {
       case IT_UPDATE: return UI_UPDATE;
       case IT_FOLDERS: return UI_FOLDERS;
       case IT_MODE: return UI_MODE;
-      case IT_WEB: return UI_WEB;
-      case IT_MCP: go(SCR_MCP); return UI_NONE;
+      case IT_PAIRING: go(SCR_MCP); return UI_NONE;
       case IT_LOG: g_log_off = 0; go(SCR_LOG); return UI_NONE;
       default: return UI_EXIT;
     }
   }
   if (g_screen == SCR_MCP) {
     if (sel == SP_PAIR) return UI_PAIR;
+    if (sel == SP_WEB) return UI_WEB;
     g_sel[SCR_DEVICES] = 0;
     go(SCR_DEVICES);
     return UI_NONE;
@@ -342,8 +341,7 @@ static void draw_main(const ui_model *m) {
         break;
       case IT_FOLDERS: if (m->whole_sd) { snprintf(val, sizeof val, "%s", UI_T("WHOLE SD", "SD INTEIRO")); ink = COL_INK_RED; } else snprintf(val, sizeof val, "%d", m->open_folders); break;
       case IT_MODE: snprintf(val, sizeof val, "%s", m->read_only ? UI_T("Read-only", "Leitura") : UI_T("Development", "Desenvolvimento")); break;
-      case IT_WEB: snprintf(val, sizeof val, "%s", m->web_on ? UI_T("on", "ligada") : UI_T("off", "desligada")); break;
-      case IT_MCP: snprintf(val, sizeof val, "%d", m->paired_n); break;
+      case IT_PAIRING: snprintf(val, sizeof val, "%d", m->paired_n); break;
       default: break;
     }
     list_row(i, g_sel[SCR_MAIN], 0, item_name(i), val, ink);
@@ -353,14 +351,15 @@ static void draw_main(const ui_model *m) {
 static void draw_mcp(const ui_model *m) {
   char val[32];
   ui_scene_bottom(COL_BOT_BG);
-  ui_bottom_chrome(UI_T("For computers using ndev or the MCP", "Para computadores com ndev ou MCP"), UI_T("< MCP pairing  (B: back)", "< Pareamento MCP  (B: voltar)"),
+  ui_bottom_chrome(UI_T("ndev / MCP computers and the web page", "Computadores ndev / MCP e a página web"), UI_T("< Pairing  (B: back)", "< Pareamento  (B: voltar)"),
                    UI_T("A: Select   B: Back", "A: Selecionar   B: Voltar"));
   val[0] = '\0';
   if (m->pairing == 1) snprintf(val, sizeof val, "%s %lus", UI_T("open", "aberto"), (unsigned long)m->left_s);
   list_row(SP_PAIR, g_sel[SCR_MCP], 0, UI_T("Pair a device", "Parear dispositivo"), val, COL_INK);
   snprintf(val, sizeof val, "%d", m->paired_n);
   list_row(SP_DEVICES, g_sel[SCR_MCP], 0, UI_T("Paired devices", "Dispositivos pareados"), val, COL_INK);
-  if (!m->auth_required) ui_text(10, 110, 0.4f, COL_INK_RED, 0, "%s", UI_T("This build has pairing turned off.", "Esta versão está com o pareamento desligado."));
+  list_row(SP_WEB, g_sel[SCR_MCP], 0, UI_T("Web page", "Página web"), m->web_on ? UI_T("on", "ligada") : UI_T("off", "desligada"), COL_INK);
+  if (!m->auth_required) ui_text(10, 130, 0.4f, COL_INK_RED, 0, "%s", UI_T("This build has pairing turned off.", "Esta versão está com o pareamento desligado."));
 }
 
 static void draw_devices(const ui_model *m) {
