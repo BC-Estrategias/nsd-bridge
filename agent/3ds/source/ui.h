@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "ndp/ndp_auth.h"
+#include "installer.h"
 #include "updater.h"
 
 /* What the main menu can ask main.c to do. */
@@ -21,6 +22,16 @@ typedef enum {
   UI_WEB,       /* web page on/off */
   UI_FORGET,    /* arm / confirm "forget all pairings" */
   UI_UNPAIR_ONE, /* forget one paired computer: its index is ui_arg() */
+  UI_INST_SD,       /* install the CIA at ui_arg_str() */
+  UI_INST_TYPE_URL, /* ask for a URL with the system keyboard */
+  UI_INST_RECV_ON,  /* the "receive from the browser" screen opened: INSTALL_URL requests are taken */
+  UI_INST_RECV_OFF,
+  UI_INST_QR_ON,    /* the QR scanner screen opened (camera on) */
+  UI_INST_QR_OFF,
+  UI_INST_YES,      /* answers to the install confirmation / progress / result screens */
+  UI_INST_NO,
+  UI_INST_CANCEL,
+  UI_INST_DISMISS,
   UI_UPDATE,    /* check for / install an update */
   UI_EXIT,
   UI_PAIR_YES,  /* answer to a pairing request */
@@ -52,6 +63,9 @@ typedef struct {
   bool forget_armed, keys_warn;
   char sd_free[24];      /* "13.7 GiB" or "" */
   unsigned long uptime_s, requests;
+  bool is_new3ds, recv_open;
+  char recv_addr[48];    /* what the page/ndev should reach: "192.168.1.5:8080" */
+  ins_status ins;
   upd_state upd;
   unsigned upd_progress;
   char upd_version[24], upd_message[64];
@@ -62,6 +76,8 @@ typedef struct {
 
 void ui_init(void);
 void ui_exit(void);
+const char *ui_arg_str(void);  /* the text that goes with UI_INST_SD */
+void ui_set_arg_str(const char *s);
 int ui_arg(void);  /* the index that goes with the last UI_UNPAIR_ONE */
 bool ui_pt(void);  /* true when the console is set to Portuguese: all strings pick pt-BR */
 #define UI_T(en, pt) (ui_pt() ? (pt) : (en))

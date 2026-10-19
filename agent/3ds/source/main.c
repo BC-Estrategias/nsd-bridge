@@ -15,6 +15,7 @@
 
 #include "access_ui.h"
 #include "alog.h"
+#include "installer.h"
 #include "ui.h"
 #include "updater.h"
 #include "ndp/ndp_access_file.h"
@@ -253,6 +254,27 @@ static int device_info(void *ctx, ndp_device_info *di) {
     di->has |= NDP_DI_SD;
   }
   return 0;
+}
+
+/* The page (or ndev) asked to install from a URL. Only taken while the "Receive from the browser" screen is open; the
+ * install flow then probes the file and asks the owner to confirm before anything is downloaded. */
+static bool g_is_new3ds = false;
+#ifndef AGENT_TEXT_UI
+static bool g_recv_open = false;
+#endif
+static int install_url_cb(void *ctx, const char *url, const uint8_t *sha256, char *detail, size_t cap) {
+  (void)ctx;
+#ifndef AGENT_TEXT_UI
+  if (!g_recv_open) { snprintf(detail, cap, "open Installer > Receive from the browser on the console first"); return NDP_ST_BUSY; }
+  if (installer_busy()) { snprintf(detail, cap, "an install is already in progress or waiting for confirmation"); return NDP_ST_BUSY; }
+  if (!installer_start_url(url, sha256)) { snprintf(detail, cap, "the console is busy updating or installing"); return NDP_ST_BUSY; }
+  alog("Install: request from the browser (%.60s)", url);
+  return NDP_OK;
+#else
+  (void)url; (void)sha256;
+  snprintf(detail, cap, "this build has no installer");
+  return NDP_ST_UNSUPPORTED_COMMAND;
+#endif
 }
 
 static ndp_keystore g_keys;
@@ -603,6 +625,9 @@ static void build_model(ui_model *m, uint64_t now) {
     m->forget_armed = g_forget_armed_until > now;
   }
   m->keys_warn = g_keys_dirty_warn;
+  m->is_new3ds = g_is_new3ds;
+  m->recv_open = g_recv_open;
+  installer_get(&m->ins);
   snprintf(m->sd_free, sizeof m->sd_free, "%s", g_sd_free);
   m->uptime_s = (unsigned long)((now - g_start_ms) / 1000);
   m->requests = (unsigned long)g_srv.requests;
@@ -642,7 +667,10 @@ int main(int argc, char **argv) {
   g_start_ms = now_ms(NULL);
 
   alog("NSD Bridge v%s, protocol %d", NDP_AGENT_VERSION, NDP_PROTOCOL_VERSION);
-  if (R_SUCCEEDED(APT_CheckNew3DS(&is_new3ds))) alog("Console: %s", is_new3ds ? "New 3DS family" : "Old 3DS family");
+  if (R_SUCCEEDED(APT_CheckNew3DS(&is_new3ds))) {
+    g_is_new3ds = is_new3ds;
+    alog("Console: %s", is_new3ds ? "New 3DS family" : "Old 3DS family");
+  }
   r = acInit();
   alog("acInit: 0x%08lX", (unsigned long)r);
   r = psInit();
@@ -661,6 +689,7 @@ int main(int argc, char **argv) {
   cfg.max_frame = NDP_DEFAULT_MAX_FRAME;
   cfg.random_bytes = random_bytes;
   cfg.device_info = device_info;
+  cfg.install_url = install_url_cb;
   if (ndp_posix_fs_init(&g_fs_base, &g_fs_ctx, "sdmc:") == 0) {
     g_fs = g_fs_base;
     g_fs.stat = fs_stat;
@@ -724,6 +753,7 @@ int main(int argc, char **argv) {
 #endif
 #ifndef AGENT_TEXT_UI
   updater_init(argc > 0 ? argv[0] : NULL);
+  installer_init();
 #else
   (void)argc;
   (void)argv;
@@ -826,6 +856,34 @@ int main(int argc, char **argv) {
             }
             break;
           }
+          case UI_INST_SD:
+            if (!installer_start_file(ui_arg_str())) alog("Install: busy, not started");
+            break;
+          case UI_INST_TYPE_URL: {
+            /* the system keyboard takes over the screen; on return the next frame redraws */
+            static char url[1100];
+            SwkbdState kb;
+            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 2, (int)sizeof url - 80);
+            swkbdSetHintText(&kb, "https://...  .cia");
+            swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+            swkbdSetFeatures(&kb, SWKBD_FIXED_WIDTH);
+            if (swkbdInputText(&kb, url, sizeof url) == SWKBD_BUTTON_CONFIRM && url[0]) {
+              char full[1130];
+              /* like FBI: a bare address is taken as http:// */
+              if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) snprintf(full, sizeof full, "http://%s", url);
+              else snprintf(full, sizeof full, "%s", url);
+              if (!installer_start_url(full, NULL)) alog("Install: busy, not started");
+            }
+            draw_pending = true;
+            break;
+          }
+          case UI_INST_RECV_ON: g_recv_open = true; alog("Install: receiving from the browser"); break;
+          case UI_INST_RECV_OFF: g_recv_open = false; break;
+          case UI_INST_QR_ON: case UI_INST_QR_OFF: break; /* the scanner arrives in the next step */
+          case UI_INST_YES: installer_confirm(true); break;
+          case UI_INST_NO: installer_confirm(false); break;
+          case UI_INST_CANCEL: installer_cancel(); break;
+          case UI_INST_DISMISS: installer_dismiss(); refresh_sd_free(); break;
           case UI_PAIR_YES:
           case UI_PAIR_NO:
             alog(act == UI_PAIR_YES ? "Pairing approved" : "Pairing refused");
@@ -865,6 +923,12 @@ int main(int argc, char **argv) {
       }
       updater_get(&us);
       if (us.revision != last_rev) { last_rev = us.revision; changed = true; }
+      {
+        static unsigned last_ins_rev = 0;
+        ins_status is;
+        installer_get(&is);
+        if (is.revision != last_ins_rev) { last_ins_rev = is.revision; changed = true; draw_now = true; }
+      }
     }
 #endif
     if (g_listening) {
@@ -906,6 +970,7 @@ quit:
 #endif
   alog("Exiting");
 #ifndef AGENT_TEXT_UI
+  installer_shutdown();
   updater_shutdown();
 #endif
   ndp_server_close(&g_srv);

@@ -14,6 +14,7 @@
 #include "ndp/ndp_defs.h"
 #include "ndp/ndp_sha256.h"
 #include "update_manifest.h"
+#include "installer.h"
 
 #define PART_FILE "sdmc:/3ds/nintendo-dev-agent/config/update.part"
 #define PART_PATH_ASCII "/3ds/nintendo-dev-agent/config/update.part"
@@ -312,7 +313,7 @@ done:
 static void start(bool download) {
   s32 prio = 0x30;
   int net_prio;
-  if (!g_init || updater_busy()) return;
+  if (!g_init || updater_busy() || installer_busy()) return;
   if (g_worker) { threadJoin(g_worker, UINT64_MAX); threadFree(g_worker); g_worker = NULL; }
   if (download) {
     upd_status s;
