@@ -113,7 +113,6 @@ suite("INSTALL_URL", () => {
       assert.deepEqual(Buffer.from(await full.arrayBuffer()), payload);
       assert.equal(await exited, 0, err);
       assert.match(out, /downloaded the whole file/);
-      assert.equal((await fetch((url as string).replace("My%20Game", "other"))).status === 404 || true, true);
     } finally {
       cli.kill();
       a.proc.kill();
