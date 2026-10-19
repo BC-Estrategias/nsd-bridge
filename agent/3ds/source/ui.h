@@ -33,7 +33,7 @@ typedef struct {
   const char *err;
   char ip[16];
   unsigned port, web_port;
-  bool web_on, web_up;
+  bool web_on, web_up, web_open;
   const char *web_peer;  /* "" when no browser is connected */
   const char *bridge_peer;
   bool read_only;

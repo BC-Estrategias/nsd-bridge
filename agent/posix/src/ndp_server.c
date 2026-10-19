@@ -267,6 +267,7 @@ int ndp_server_listen(ndp_server *s, uint32_t s_addr, uint16_t port) {
 }
 
 void ndp_server_set_web(ndp_server *s, const ndp_web_assets *assets) { s->web_assets = assets; }
+void ndp_server_set_web_open(ndp_server *s, int open) { s->web_open = open != 0; }
 int ndp_server_web_enabled(const ndp_server *s) { return s->web_listen_fd >= 0; }
 
 int ndp_server_web_listen(ndp_server *s, uint32_t s_addr, uint16_t port) {
@@ -477,6 +478,13 @@ static void fmt_peer(char *dst, size_t cap, const struct sockaddr_in *sa) {
 
 static void adopt(ndp_server *s, ndp_conn *c, int fd, ndp_conn_kind kind, const char *peer) {
   ndp_agent_init(&c->agent, &s->agent_cfg);
+  if (kind == NDP_CONN_WS && s->web_open && s->agent_cfg.auth && strcmp(s->agent_cfg.auth, "required") == 0) {
+    /* an open page: no pairing for this connection, and no access to the list of paired computers */
+    c->agent.cfg.auth = "none";
+    c->agent.cfg.keys = NULL;
+    c->agent.cfg.pairing = NULL;
+    c->agent.sec.required = 0;
+  }
   c->agent.cfg.conn_id = (c == rawc(s)) ? 0 : 1; /* who owns a pairing request */
   c->agent.cfg.peer = c->peer;
   ndp_decoder_init(&c->dec, c->rbuf, sizeof c->rbuf, s->agent_cfg.max_frame);

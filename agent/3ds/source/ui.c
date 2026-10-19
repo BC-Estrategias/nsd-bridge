@@ -220,7 +220,10 @@ static void draw_top(const ui_model *m) {
   ui_text(12, 32, 0.7f, net_col[m->net], 0, "%s", ui_pt() ? net_pt[m->net] : net_en[m->net]);
   if (m->net == 3) {
     ui_text(12, 56, 0.45f, COL_WHITE, 0, "IP  %s:%u", m->ip, m->port);
-    if (m->web_up) ui_text(12, 72, 0.45f, COL_GREEN, 0, "http://%s:%u", m->ip, m->web_port);
+    if (m->web_up) {
+      ui_text(12, 72, 0.45f, COL_GREEN, 0, "http://%s:%u", m->ip, m->web_port);
+      ui_text(392, 72, 0.4f, m->web_open ? COL_YELLOW : COL_DIM, UI_RIGHT, "%s", m->web_open ? UI_T("browser: no pairing", "navegador: sem pareamento") : UI_T("browser: pairing required", "navegador: exige pareamento"));
+    }
     else ui_text(12, 72, 0.45f, COL_DIM, 0, "%s", m->web_on ? UI_T("web page starting...", "página web iniciando...") : UI_T("web page off", "página web desligada"));
   } else if (m->err && m->err[0]) {
     ui_text(12, 56, 0.45f, COL_RED, 0, "%.60s", m->err);

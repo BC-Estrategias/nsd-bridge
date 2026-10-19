@@ -105,6 +105,7 @@ typedef struct {
   int web_client_fd;    /* the WebSocket client (= nc[1].fd), -1 if none */
   char web_peer[24];
   const ndp_web_assets *web_assets;
+  int web_open;         /* 1 = the page's WebSocket needs no pairing (the TCP port still does); see ndp_server_set_web_open */
   uint32_t web_requests; /* HTTP pages served */
 
   /* statistics, monotonically increasing */
@@ -128,6 +129,10 @@ int ndp_server_listen(ndp_server *s, uint32_t s_addr, uint16_t port);
 
 /* The web page (call before ndp_server_web_listen). NULL disables serving it. */
 void ndp_server_set_web(ndp_server *s, const ndp_web_assets *assets);
+/* 1 = browsers using the page's WebSocket are served without pairing (auth "none" for those connections only, and
+ * without the pairing list): the owner still controls the mode and the opened folders on the console, and the TCP port
+ * used by the CLI and the MCP keeps requiring pairing. 0 (the default) = the page pairs like any other client. */
+void ndp_server_set_web_open(ndp_server *s, int open);
 /* Starts/stops the web listener (`port` 0 = ephemeral). 0 or a negative errno-style value. While it is closed,
  * browsers get connection refused. */
 int ndp_server_web_listen(ndp_server *s, uint32_t s_addr, uint16_t port);

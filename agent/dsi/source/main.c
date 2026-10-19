@@ -550,8 +550,8 @@ static void draw(void) {
   else printf("Status : " C_YELLOW "RECONNECTING" C_RESET "\n");
   printf("IP     : %s:%u\n", inet_ntoa(ip), (unsigned)g_srv.port);
   if (g_web_listening) {
-    printf("Web    : :%u %s\n", (unsigned)g_srv.web_port,
-           g_srv.web_client_fd >= 0 ? C_GREEN "ON" C_RESET : "idle");
+    printf("Web    : :%u %s%s\n", (unsigned)g_srv.web_port,
+           g_srv.web_client_fd >= 0 ? C_GREEN "ON" C_RESET : "idle", g_srv.web_open ? " (open)" : "");
   } else {
     printf("Web    : %s\n", g_web_on ? "starting" : "off (R)");
   }
@@ -675,6 +675,11 @@ int main(int argc, char *argv[]) {
   g_web_assets.index_gz_len = ndp_web_index_gz_len;
   g_web_assets.version = ndp_web_version;
   ndp_server_set_web(&g_srv, &g_web_assets);
+  {
+    /* the page needs no pairing unless this file exists (the CLI and the MCP always pair) */
+    struct stat wb;
+    ndp_server_set_web_open(&g_srv, stat(CONFIG_DIR "/require-web-pairing", &wb) != 0);
+  }
 
   int lr = ndp_server_listen(&g_srv, ip.s_addr, AGENT_PORT);
   if (lr != 0) {

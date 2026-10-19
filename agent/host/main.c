@@ -2,12 +2,13 @@
  * development without a console.
  * Usage: ndp-host-agent [--bind ADDR] [--port N] [--mode READ_ONLY|DEVELOPMENT|FULL] [--root DIR]
  *                        [--write-root PATH]... [--idle-ms N] [--once] [-v]
- *                        [--web-port N] [--auth required|none] [--keys-file FILE] [--pair-code XXXX-XXXX-XXXX-XXXX] [--pair-ms N]
+ *                        [--web-port N] [--web-open] [--auth required|none] [--keys-file FILE] [--pair-code XXXX-XXXX-XXXX-XXXX] [--pair-ms N]
  * --root DIR serves DIR as the "SD card" (FS_*); without it FS commands are unsupported.
  * --write-root PATH (repeatable) replaces the default writable folder (/3ds/nintendo-dev-agent).
  * --read-root PATH (repeatable) replaces the default readable folder ("/").
  * --access-file FILE loads the owner's folder list (what the console UI edits) and uses it as the policy.
  * --web-port N serves the embedded web page and its WebSocket on that port (0 = ephemeral; without the flag the page is off).
+ * --web-open (with --auth required) serves the page's WebSocket without pairing; the TCP port still requires it.
  * --auth required turns on pairing/HMAC (spec §4); --keys-file persists the paired keys;
  * --pair-code opens the pairing window at start with that code (tests; a real console shows a random one). */
 #define _POSIX_C_SOURCE 200809L
@@ -102,7 +103,7 @@ int main(int argc, char **argv) {
   static ndp_policy policy;
   int custom_policy = 0, custom_read = 0;
   const char *access_file = NULL;
-  int web_on = 0, web_port = 0;
+  int web_on = 0, web_port = 0, web_open = 0;
   static ndp_web_assets web_assets;
   static ndp_access access;
   const char *pair_code = NULL;
@@ -142,6 +143,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--pair-code") && i + 1 < argc) pair_code = argv[++i];
     else if (!strcmp(argv[i], "--pair-ms") && i + 1 < argc) pair_ms = (unsigned)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--pair-open")) pair_open = 1;
+    else if (!strcmp(argv[i], "--web-open")) web_open = 1;
     else if (!strcmp(argv[i], "--pair-approve") && i + 1 < argc) {
       const char *a = argv[++i];
       approve = !strcmp(a, "auto") ? 1 : !strcmp(a, "deny") ? 2 : 0;
@@ -229,6 +231,7 @@ int main(int argc, char **argv) {
     web_assets.index_gz_len = ndp_web_index_gz_len;
     web_assets.version = ndp_web_version;
     ndp_server_set_web(&srv, &web_assets);
+    ndp_server_set_web_open(&srv, web_open);
     rc = ndp_server_web_listen(&srv, ia.s_addr, (uint16_t)web_port);
     if (rc < 0) { fprintf(stderr, "web listen failed: %d\n", rc); return 1; }
   }

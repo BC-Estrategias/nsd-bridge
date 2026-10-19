@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { type ChildProcess } from "node:child_process";
-import { x25519Public, x25519Shared } from "../src/index.ts";
+import { NdpClient, x25519Public, x25519Shared } from "../src/index.ts";
 import { SKIP, startAgent } from "./helpers.ts";
 
 const WEB = fileURLToPath(new URL("../../../../web/js/", import.meta.url));
@@ -89,6 +89,50 @@ suite("the page pairs by number comparison over a WebSocket", () => {
     } finally {
       a.proc.kill();
       rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+});
+
+suite("an open page: the browser needs no pairing, the TCP port (CLI/MCP) still does", () => {
+  test("the WebSocket is served as auth none, cannot see or forget pairings, and the TCP port refuses an unpaired client", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ndp-webopen-"));
+    const a = await startAgent(["--root", dir, "--mode", "DEVELOPMENT", "--auth", "required", "--keys-file", join(dir, "keys.bin"), "--web-port", "0", "--web-open"]);
+    try {
+      // the page's connection: no AUTH step, and the file commands work
+      const w = new NDP.NdpWsClient(`ws://127.0.0.1:${a.webPort}/ws`);
+      await w.open();
+      const info = await w.hello();
+      assert.equal(info.auth, "none");
+      assert.equal(Array.isArray(await w.list("/")), true);
+      // it cannot read or prune the list of paired computers
+      await assert.rejects(w.pairList(), (e: any) => e.statusName === "UNSUPPORTED_COMMAND");
+      await assert.rejects(w.forgetPairing(new Uint8Array(4)), (e: any) => e.statusName === "UNSUPPORTED_COMMAND");
+      w.close();
+
+      // the raw TCP port used by the CLI and the MCP server is unchanged: pairing is required there
+      const c = await NdpClient.connect({ host: "127.0.0.1", port: a.port });
+      const tcpInfo = await c.hello();
+      assert.equal(tcpInfo.auth, "required");
+      await assert.rejects(c.list("/"), (e: any) => e.statusName === "UNAUTHORIZED");
+      c.close();
+    } finally {
+      a.proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("without --web-open the page still has to pair", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ndp-webclosed-"));
+    const a = await startAgent(["--root", dir, "--auth", "required", "--keys-file", join(dir, "keys.bin"), "--web-port", "0"]);
+    try {
+      const w = new NDP.NdpWsClient(`ws://127.0.0.1:${a.webPort}/ws`);
+      await w.open();
+      assert.equal((await w.hello()).auth, "required");
+      await assert.rejects(w.list("/"), (e: any) => e.statusName === "UNAUTHORIZED");
+      w.close();
+    } finally {
+      a.proc.kill();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

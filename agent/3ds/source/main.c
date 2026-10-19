@@ -572,6 +572,7 @@ static void build_model(ui_model *m, uint64_t now) {
   m->web_port = (unsigned)g_srv.web_port;
   m->web_on = g_web_on;
   m->web_up = g_web_listening;
+  m->web_open = g_srv.web_open;
   m->web_peer = g_srv.web_client_fd >= 0 ? g_srv.web_peer : "";
   m->bridge_peer = g_srv.client_fd >= 0 ? g_srv.peer : "";
   m->read_only = g_srv.agent_cfg.mode == NDP_MODE_READ_ONLY;
@@ -685,6 +686,11 @@ int main(int argc, char **argv) {
   g_web_assets.index_gz_len = ndp_web_index_gz_len;
   g_web_assets.version = ndp_web_version;
   ndp_server_set_web(&g_srv, &g_web_assets);
+  {
+    /* the page needs no pairing unless this file exists (the CLI and the MCP always pair) */
+    struct stat wb;
+    ndp_server_set_web_open(&g_srv, stat(CONFIG_DIR "/require-web-pairing", &wb) != 0);
+  }
 
   {
     struct stat sb;
