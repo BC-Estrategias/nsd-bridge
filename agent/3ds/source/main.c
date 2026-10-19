@@ -16,6 +16,7 @@
 #include "access_ui.h"
 #include "alog.h"
 #include "ui.h"
+#include "updater.h"
 #include "ndp/ndp_access_file.h"
 #include "ndp/ndp_keystore_file.h"
 #include "ndp/ndp_posix_fs.h"
@@ -603,6 +604,14 @@ static void build_model(ui_model *m, uint64_t now) {
   snprintf(m->sd_free, sizeof m->sd_free, "%s", g_sd_free);
   m->uptime_s = (unsigned long)((now - g_start_ms) / 1000);
   m->requests = (unsigned long)g_srv.requests;
+  {
+    upd_status us;
+    updater_get(&us);
+    m->upd = us.state;
+    m->upd_progress = us.progress;
+    snprintf(m->upd_version, sizeof m->upd_version, "%s", us.version);
+    snprintf(m->upd_message, sizeof m->upd_message, "%s", us.message);
+  }
 }
 
 static void draw(uint64_t now) {
@@ -612,7 +621,7 @@ static void draw(uint64_t now) {
 }
 #endif /* AGENT_TEXT_UI */
 
-int main(void) {
+int main(int argc, char **argv) {
   ndp_agent_config cfg;
   ndp_server_platform plat;
   uint64_t last_draw = 0;
@@ -706,6 +715,7 @@ int main(void) {
 #ifndef AGENT_TEXT_UI
   refresh_sd_free();
 #endif
+  updater_init(argc > 0 ? argv[0] : NULL);
   draw(now_ms(NULL));
   while (aptMainLoop()) {
     uint64_t now;
@@ -798,6 +808,13 @@ int main(void) {
             alog(act == UI_PAIR_YES ? "Pairing approved" : "Pairing refused");
             (void)ndp_server_pair2_decide(&g_srv, act == UI_PAIR_YES);
             break;
+          case UI_UPDATE: {
+            upd_status us;
+            updater_get(&us);
+            if (us.state == UPD_AVAILABLE) { alog("Update: installing %s", us.version); updater_download(); }
+            else if (us.state != UPD_DONE) updater_check();
+            break;
+          }
           case UI_EXIT: goto quit;
           default: break;
         }
@@ -808,6 +825,25 @@ int main(void) {
 #endif
     now = now_ms(NULL);
     changed = service_network(now);
+#ifndef AGENT_TEXT_UI
+    {
+      /* once per run, a few seconds after the network is up (a file named no-update-check in the config folder turns
+       * the automatic check off; the Updates menu entry still works) */
+      static uint64_t listen_since = 0;
+      static bool auto_checked = false;
+      upd_status us;
+      static unsigned last_rev = 0;
+      if (!g_listening) listen_since = 0;
+      else if (!listen_since) listen_since = now;
+      if (!auto_checked && g_listening && now - listen_since >= 4000) {
+        struct stat nb;
+        auto_checked = true;
+        if (stat(CONFIG_DIR "/no-update-check", &nb) != 0) updater_check();
+      }
+      updater_get(&us);
+      if (us.revision != last_rev) { last_rev = us.revision; changed = true; }
+    }
+#endif
     if (g_listening) {
       int s = ndp_server_step(&g_srv, 16);
       if (s < 0) {
@@ -846,6 +882,9 @@ int main(void) {
 quit:
 #endif
   alog("Exiting");
+#ifndef AGENT_TEXT_UI
+  updater_shutdown();
+#endif
   ndp_server_close(&g_srv);
   if (g_ndm_locked) {
     NDMU_UnlockState();

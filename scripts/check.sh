@@ -32,6 +32,12 @@ echo "==> TypeScript bridge"
 if [ "${1:-}" = "--3ds" ]; then
   echo "==> 3DS build"
   ./scripts/build-3ds.sh
+  # the update-manifest logic is pure C; it needs a host Jansson (e.g. brew/apt libjansson-dev) to run
+  if cc -I agent/3ds/source agent/3ds/tests/update_manifest_test.c agent/3ds/source/update_manifest.c -ljansson -o build/update_manifest_test 2>/dev/null; then
+    ./build/update_manifest_test
+  else
+    echo "(skipping update_manifest_test: no host Jansson)"
+  fi
 fi
 
 echo "==> all checks passed"

@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "ndp/ndp_auth.h"
+#include "updater.h"
 
 /* What the main menu can ask main.c to do. */
 typedef enum {
@@ -19,6 +20,7 @@ typedef enum {
   UI_PAIR,      /* open/close the pairing window */
   UI_WEB,       /* web page on/off */
   UI_FORGET,    /* arm / confirm "forget all pairings" */
+  UI_UPDATE,    /* check for / install an update */
   UI_EXIT,
   UI_PAIR_YES,  /* answer to a pairing request */
   UI_PAIR_NO
@@ -48,6 +50,9 @@ typedef struct {
   bool forget_armed, keys_warn;
   char sd_free[24];      /* "13.7 GiB" or "" */
   unsigned long uptime_s, requests;
+  upd_state upd;
+  unsigned upd_progress;
+  char upd_version[24], upd_message[64];
 } ui_model;
 
 /* Colors (RGBA8, as citro2d wants them). */
@@ -64,9 +69,9 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
 void ui_draw(const ui_model *m);
 
 /* ---- drawing primitives, shared with the folder editor ---- */
-#define UI_ROW_H 24
+#define UI_ROW_H 22
 #define UI_LIST_Y 40
-#define UI_LIST_ROWS 7
+#define UI_LIST_ROWS 8
 void ui_begin(void);                    /* starts a frame */
 void ui_end(void);                      /* presents it */
 void ui_scene_top(uint32_t bg);         /* 400x240 */

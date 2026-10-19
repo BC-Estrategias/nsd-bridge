@@ -115,7 +115,7 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 }
 
 /* ---- main menu ---- */
-enum { IT_FOLDERS, IT_MODE, IT_PAIR, IT_WEB, IT_PAIRED, IT_LOG, IT_EXIT, IT_COUNT };
+enum { IT_FOLDERS, IT_MODE, IT_PAIR, IT_WEB, IT_PAIRED, IT_UPDATE, IT_LOG, IT_EXIT, IT_COUNT };
 
 static const char *item_name(int i) {
   switch (i) {
@@ -124,6 +124,7 @@ static const char *item_name(int i) {
     case IT_PAIR: return UI_T("Pair a device", "Parear dispositivo");
     case IT_WEB: return UI_T("Web page", "Página web");
     case IT_PAIRED: return UI_T("Paired devices", "Dispositivos pareados");
+    case IT_UPDATE: return UI_T("Updates", "Atualizações");
     case IT_LOG: return UI_T("Activity log", "Log de atividade");
     default: return UI_T("Exit", "Sair");
   }
@@ -136,6 +137,7 @@ static ui_action item_action(int i) {
     case IT_PAIR: return UI_PAIR;
     case IT_WEB: return UI_WEB;
     case IT_PAIRED: return UI_FORGET;
+    case IT_UPDATE: return UI_UPDATE;
     case IT_EXIT: return UI_EXIT;
     default: return UI_NONE;
   }
@@ -241,6 +243,22 @@ static void draw_top(const ui_model *m) {
     ui_text(200, 170, 0.5f, COL_RED, UI_CENTER, "%s", UI_T("Select it again to forget ALL paired devices", "Selecione de novo para esquecer TODOS os dispositivos"));
   }
 
+  if (m->pairing == 0 && !m->forget_armed) {
+    if (m->upd == UPD_AVAILABLE) {
+      ui_text(200, 160, 0.55f, COL_YELLOW, UI_CENTER, "%s %s", UI_T("Update available:", "Atualização disponível:"), m->upd_version);
+      ui_text(200, 180, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("Open \"Updates\" in the menu to install it.", "Abra \"Atualizações\" no menu para instalar."));
+    } else if (m->upd == UPD_DOWNLOADING || m->upd == UPD_INSTALLING || m->upd == UPD_VERIFYING) {
+      ui_text(200, 160, 0.5f, COL_CYAN, UI_CENTER, "%s %s", m->upd == UPD_INSTALLING ? UI_T("Installing", "Instalando") : UI_T("Downloading", "Baixando"), m->upd_version);
+      ui_rect(60, 184, 280, 12, COL_BAR);
+      ui_rect(60, 184, 280.0f * (float)m->upd_progress / 100.0f, 12, COL_GREEN);
+      ui_text(200, 200, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("Do not turn the console off.", "Não desligue o console."));
+    } else if (m->upd == UPD_DONE) {
+      ui_text(200, 164, 0.55f, COL_GREEN, UI_CENTER, "%s %s", UI_T("Updated to", "Atualizado para"), m->upd_version);
+      ui_text(200, 184, 0.45f, COL_WHITE, UI_CENTER, "%s", UI_T("Press START to close, then open the app again.", "Aperte START para fechar e abra o app de novo."));
+    } else if (m->upd == UPD_ERROR) {
+      ui_text(200, 168, 0.45f, COL_RED, UI_CENTER, "%s: %.40s", UI_T("Update failed", "Falha na atualização"), m->upd_message);
+    }
+  }
   ui_rect(0, 220, 400, 20, COL_BAR);
   ui_text(8, 223, 0.4f, COL_WHITE, 0, "%s: %lu    %s: %lu", UI_T("Requests", "Requisições"), m->requests,
           UI_T("Uptime", "Ativo (min)"), m->uptime_s / 60);
@@ -269,10 +287,23 @@ static void draw_menu(const ui_model *m) {
         if (m->forget_armed) { snprintf(val, sizeof val, "%s", UI_T("tap again: forget all", "de novo: esquecer todos")); ink = COL_INK_RED; }
         else snprintf(val, sizeof val, "%d", m->paired);
         break;
+      case IT_UPDATE:
+        switch (m->upd) {
+          case UPD_CHECKING: snprintf(val, sizeof val, "%s", UI_T("checking...", "verificando...")); break;
+          case UPD_CURRENT: snprintf(val, sizeof val, "%s", UI_T("up to date", "em dia")); break;
+          case UPD_AVAILABLE: snprintf(val, sizeof val, "%s %s", m->upd_version, UI_T("- tap to install", "- instalar")); ink = UI_RGB(0x1b, 0x7a, 0x2b); break;
+          case UPD_DOWNLOADING: snprintf(val, sizeof val, "%s %u%%", UI_T("downloading", "baixando"), m->upd_progress); break;
+          case UPD_VERIFYING: snprintf(val, sizeof val, "%s", UI_T("verifying...", "conferindo...")); break;
+          case UPD_INSTALLING: snprintf(val, sizeof val, "%s %u%%", UI_T("installing", "instalando"), m->upd_progress); break;
+          case UPD_DONE: snprintf(val, sizeof val, "%s", UI_T("done - restart", "pronto - reabra")); ink = UI_RGB(0x1b, 0x7a, 0x2b); break;
+          case UPD_ERROR: snprintf(val, sizeof val, "%s", UI_T("failed - tap to retry", "falhou - tentar de novo")); ink = COL_INK_RED; break;
+          default: snprintf(val, sizeof val, "%s", UI_T("tap to check", "verificar")); break;
+        }
+        break;
       default: break;
     }
-    ui_text(10, y + 4, 0.5f, ink, 0, "%s", item_name(i));
-    if (val[0]) ui_text(310, y + 5, 0.45f, ink, UI_RIGHT, "%s", val);
+    ui_text(10, y + 3, 0.5f, ink, 0, "%s", item_name(i));
+    if (val[0]) ui_text(310, y + 4, 0.45f, ink, UI_RIGHT, "%s", val);
   }
   if (m->pairing == 2) {
     ui_rect(0, 100, 320, 120, COL_BOT_BG);

@@ -50,7 +50,7 @@ jobs:
         # pkg.devkitpro.org sometimes answers 403 to shared CI runners: retry with a growing pause
         run: |
           for i in 1 2 3 4 5 6; do
-            if dkp-pacman -Syu --noconfirm 3ds-dev; then exit 0; fi
+            if dkp-pacman -Syu --noconfirm 3ds-dev 3ds-curl 3ds-mbedtls 3ds-zlib 3ds-jansson; then exit 0; fi
             echo "attempt $i failed; retrying"; sleep $((i * 20))
           done
           exit 1

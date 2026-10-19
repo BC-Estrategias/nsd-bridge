@@ -35,13 +35,14 @@ CFLAGS  += -DAGENT_TEXT_UI
 endif
 # the main thread's stack is small (32 KB by default): no single function may take more than 4 KB of it
 CFLAGS  += -Werror=stack-usage=4096
-CFLAGS  += $(INCLUDE) -D__3DS__
+CFLAGS  += $(INCLUDE) -D__3DS__ -DCA_PEM_PATH=\"$(TOPDIR)/data/cacert.pem\"
 
 ASFLAGS := -g $(ARCH)
 LDFLAGS  = -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS    := -lcitro2d -lcitro3d -lctru -lm
-LIBDIRS := $(CTRULIB)
+# the updater: libcurl over mbedTLS (devkitPro packages 3ds-curl 3ds-mbedtls 3ds-zlib 3ds-jansson)
+LIBS    := -lcitro2d -lcitro3d -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -ljansson -lz -lctru -lm
+LIBDIRS := $(PORTLIBS) $(CTRULIB)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
