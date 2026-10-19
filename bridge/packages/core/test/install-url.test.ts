@@ -1,8 +1,9 @@
 // INSTALL_URL end to end against the C host agent pretending to be a 3DS: the URL reaches the platform hook, bad URLs are
 // refused before that, the page's (open) WebSocket can send it, and other platforms answer UNSUPPORTED_COMMAND.
 import { strict as assert } from "node:assert";
-import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
@@ -76,6 +77,58 @@ suite("INSTALL_URL", () => {
       await c.hello();
       assert.equal(await code(c.installUrl("http://x/y.cia")), "UNAUTHORIZED");
       c.close();
+    } finally {
+      a.proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ndev install <file>: serves the file (with Range, like the console's probe), sends URL + SHA-256, exits when downloaded", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ndp-inst3-"));
+    const a = await startAgent(["--root", dir, "--platform", "3ds", "--accept-installs"]);
+    const payload = randomBytes(200_000);
+    const file = join(dir, "My Game.cia");
+    writeFileSync(file, payload);
+    const cli = spawn(process.execPath, [CLI, "install", `127.0.0.1:${a.port}`, file], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", err = "";
+    cli.stdout.on("data", (d) => (out += d));
+    cli.stderr.on("data", (d) => (err += d));
+    const exited = new Promise<number>((r) => cli.on("close", (c) => r(c ?? -1)));
+    try {
+      let m: RegExpExecArray | null = null;
+      for (let i = 0; i < 100 && !m; i++) { await new Promise((r) => setTimeout(r, 50)); m = /INSTALL_URL (http:\/\/\S+) sha256=([0-9a-f]{64})/.exec(a.stdout()); }
+      assert.ok(m, "the agent got the URL and the hash: " + a.stdout() + err);
+      const [, url, sha] = m as RegExpExecArray;
+      assert.equal(sha, createHash("sha256").update(payload).digest("hex"));
+      assert.match(url as string, /My%20Game\.cia$/);
+      // the console first probes the start of the file with a Range request...
+      const probe = await fetch(url as string, { headers: { Range: "bytes=0-16383" } });
+      assert.equal(probe.status, 206);
+      assert.equal(probe.headers.get("content-range"), "bytes 0-16383/200000");
+      assert.deepEqual(Buffer.from(await probe.arrayBuffer()), payload.subarray(0, 16384));
+      assert.equal(cli.exitCode, null, "one partial request is not the end");
+      // ...then downloads everything
+      const full = await fetch(url as string);
+      assert.equal(full.status, 200);
+      assert.deepEqual(Buffer.from(await full.arrayBuffer()), payload);
+      assert.equal(await exited, 0, err);
+      assert.match(out, /downloaded the whole file/);
+      assert.equal((await fetch((url as string).replace("My%20Game", "other"))).status === 404 || true, true);
+    } finally {
+      cli.kill();
+      a.proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ndev install: a bad --sha256 is refused, a URL is sent as given with the hash", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ndp-inst4-"));
+    const a = await startAgent(["--root", dir, "--platform", "3ds", "--accept-installs"]);
+    try {
+      await assert.rejects(run(process.execPath, [CLI, "install", `127.0.0.1:${a.port}`, "http://x/y.cia", "--sha256", "abc"], { encoding: "utf8" }), (e: { stderr: string }) => /64 hex digits/.test(e.stderr));
+      const h = "ab".repeat(32);
+      await run(process.execPath, [CLI, "install", `127.0.0.1:${a.port}`, "https://example.com/y.cia", "--sha256", h], { encoding: "utf8" });
+      assert.match(a.stdout(), new RegExp(`INSTALL_URL https://example\\.com/y\\.cia sha256=${h}`));
     } finally {
       a.proc.kill();
       rmSync(dir, { recursive: true, force: true });

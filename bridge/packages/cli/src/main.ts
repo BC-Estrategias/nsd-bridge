@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-import { createWriteStream } from "node:fs";
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import { createSocket } from "node:dgram";
+import { createReadStream, createWriteStream, existsSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import { once } from "node:events";
 import { hostname } from "node:os";
 import { createInterface } from "node:readline/promises";
@@ -39,7 +43,9 @@ Usage:
                                                   DSi: download the newest DSi build from GitHub (SHA-256 checked) and send it
                                                   to /nsd-bridge/ (needs DEVELOPMENT mode: press X on the DSi). The 3DS updates
                                                   itself from its Updates menu.
-  ndev install <host[:port]> <url>                3DS: offer installing a title from an http(s) URL; on the console open
+  ndev install <host[:port]> <file.cia | url> [--sha256 HEX]
+                                                  3DS: offer installing a title. A file is served from this computer (its SHA-256
+                                                  goes along; the console checks it before finishing). On the console open
                                                   Installer > Receive from the browser, and confirm there with A
   ndev mkdir <host[:port]> <path>                 create a directory (the parent must exist)
   ndev mv    <host[:port]> <from> <to>            move/rename a file or folder (never overwrites; also restores from the trash)
@@ -239,15 +245,64 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (cmd === "install") {
-    // 3DS: ask the console to offer installing a title from a URL. The owner opens Installer > Receive from the browser on
-    // the console and confirms there; nothing is downloaded before that.
-    const [url] = parseFlags(rest, []).rest;
-    if (!url) throw new Error("install needs <url>  (e.g. ndev install 192.168.1.20 http://192.168.1.10:8000/game.cia)");
+    // 3DS: ask the console to offer installing a title. The argument is an http(s) URL, or a local file that this command
+    // serves itself (with its SHA-256, which the console checks before finishing the install). The owner opens
+    // Installer > Receive from the browser on the console and confirms there; nothing is downloaded before that.
+    const { text, rest: pos } = parseFlags(rest, [], [], ["--sha256"]);
+    const what = pos[0];
+    if (!what) throw new Error("install needs a <file.cia> or <url>  (e.g. ndev install 192.168.1.20 game.cia)");
+    const wantHash = text.get("--sha256");
+    if (wantHash !== undefined && !/^[0-9a-fA-F]{64}$/.test(wantHash)) throw new Error("--sha256 expects 64 hex digits");
     return withClient(target, async (client, host) => {
       if (client.info!.platform !== "3ds") throw new Error(`${host} is a ${client.info!.platform} console: only the 3DS has an installer`);
-      await client.installUrl(url);
-      console.log("Sent. Confirm on the 3DS (A) to download and install.");
-      return 0;
+      if (!existsSync(what)) {
+        await client.installUrl(what, wantHash ? Uint8Array.from(Buffer.from(wantHash, "hex")) : undefined);
+        console.log("Sent. Confirm on the 3DS (A) to download and install.");
+        return 0;
+      }
+      const size = statSync(what).size;
+      const name = basename(what);
+      const digest = createHash("sha256");
+      await new Promise<void>((res, rej) => createReadStream(what).on("data", (c) => digest.update(c)).on("end", () => res()).on("error", rej));
+      const hash = digest.digest();
+      let served = 0, finished: (() => void) | undefined;
+      const done = new Promise<void>((r) => (finished = r));
+      const server = createServer((req, res) => {
+        if (req.method !== "GET" || (req.url ?? "").split("?")[0] !== "/" + encodeURIComponent(name)) { res.writeHead(404).end(); return; }
+        const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ""));
+        let start = 0, end = size - 1, partial = false;
+        if (m && (m[1] || m[2])) {
+          partial = true;
+          if (m[1]) { start = Number(m[1]); end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1; }
+          else { start = Math.max(0, size - Number(m[2])); }
+          if (start > end || start >= size) { res.writeHead(416, { "Content-Range": `bytes */${size}` }).end(); return; }
+        }
+        res.writeHead(partial ? 206 : 200, { "Content-Type": "application/octet-stream", "Content-Length": end - start + 1, "Accept-Ranges": "bytes",
+          ...(partial ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {}) });
+        const stream = createReadStream(what, { start, end });
+        stream.pipe(res);
+        res.on("close", () => { if (!partial && res.writableFinished) { served++; finished?.(); } });
+      });
+      await new Promise<void>((r) => server.listen(0, "0.0.0.0", r));
+      const port = (server.address() as { port: number }).port;
+      // the address of this computer that the console can reach
+      const mine = await new Promise<string>((resolve, reject) => {
+        const u = createSocket("udp4");
+        u.once("error", reject);
+        u.connect(parseTarget(target).port, host, () => { const a = u.address().address; u.close(); resolve(a); });
+      });
+      try {
+        await client.installUrl(`http://${mine}:${port}/${encodeURIComponent(name)}`, hash);
+        console.log(`Serving ${name} (${(size / 1024 / 1024).toFixed(1)} MiB, sha256 ${hash.toString("hex").slice(0, 16)}…) at http://${mine}:${port}/ .`);
+        console.log("Confirm on the 3DS (A). Waiting for the download to finish (Ctrl+C to stop)...");
+        const timeout = new Promise<void>((r) => setTimeout(r, 15 * 60 * 1000).unref());
+        await Promise.race([done, timeout]);
+        console.log(served > 0 ? "The console downloaded the whole file." : "Nothing was downloaded (timed out).");
+        return served > 0 ? 0 : 1;
+      } finally {
+        server.close();
+        server.closeAllConnections();
+      }
     });
   }
 

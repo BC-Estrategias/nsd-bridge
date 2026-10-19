@@ -54,7 +54,7 @@ typedef struct {
    * "receive from the browser" screen is open) and asks its owner to confirm. Returns NDP_OK when the request was taken;
    * otherwise a status (NDP_ST_BUSY with a `detail` text for "not open now / one already pending"). NULL => the command
    * answers UNSUPPORTED_COMMAND. The URL has been checked (http/https, printable ASCII, no spaces). */
-  int (*install_url)(void *ctx, const char *url, char *detail, size_t detail_cap);
+  int (*install_url)(void *ctx, const char *url, const uint8_t *sha256 /* NULL, or the 32-byte hash the file must have */, char *detail, size_t detail_cap);
   void *install_url_ctx;
   /* Set by the server per connection: a small id for the connection and its peer address (for the pairing prompt). */
   int conn_id;

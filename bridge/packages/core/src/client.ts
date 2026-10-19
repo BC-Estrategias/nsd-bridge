@@ -571,8 +571,13 @@ export class NdpClient {
 
   /** Asks a 3DS to offer installing a title from this URL (http:// or https://). The console only takes it while its
    * "Receive from the browser" screen is open, and its owner confirms there before anything is downloaded. */
-  async installUrl(url: string): Promise<void> {
-    await this.request(Command.INSTALL_URL, encodeTlv([[Tag.URL, str(url)]]));
+  async installUrl(url: string, sha256?: Uint8Array): Promise<void> {
+    const fields: TlvField[] = [[Tag.URL, str(url)]];
+    if (sha256) {
+      if (sha256.length !== 32) throw new RangeError("sha256 must be 32 bytes");
+      fields.push([Tag.SHA256, sha256]);
+    }
+    await this.request(Command.INSTALL_URL, encodeTlv(fields));
   }
 
   async stat(path: string): Promise<FsStat> {
