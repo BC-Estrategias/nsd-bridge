@@ -403,7 +403,6 @@ static void draw_main(const ui_model *m) {
           default: snprintf(val, sizeof val, "%s", UI_T("tap to check", "verificar")); break;
         }
         break;
-      case IT_SETTINGS: if (m->whole_sd) { snprintf(val, sizeof val, "%s", UI_T("WHOLE SD", "SD INTEIRO")); ink = COL_INK_RED; } else snprintf(val, sizeof val, "%s", m->read_only ? UI_T("Read-only", "Leitura") : UI_T("Development", "Desenvolvimento")); break;
       default: break;
     }
     ui_list_row(i, g_sel[SCR_MAIN], main_top, item_name(i), val, ink);
