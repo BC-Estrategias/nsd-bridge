@@ -47,13 +47,14 @@ static void fail(ins_error e, uint32_t am) {
 static uint64_t now_ms(void);
 /* Progress changes with every piece received (dozens of times a second); the screen only needs to hear about it a few times a
  * second, because each redraw costs the download CPU time. */
-static void progress(uint64_t done, uint64_t total, unsigned bps) {
+static void progress(uint64_t done, uint64_t total, unsigned bps, unsigned eta) {
   static uint64_t last_ms;
   uint64_t t = now_ms();
   LightLock_Lock(&g_lock);
   g_st.done = done;
   g_st.total = total;
   g_st.bps = bps;
+  g_st.eta_s = eta;
   if (t - last_ms >= 250 || (total && done >= total)) { touch(); last_ms = t; }
   LightLock_Unlock(&g_lock);
 }
@@ -97,6 +98,8 @@ typedef struct {
   uint64_t wait_prod_ms, wait_writer_ms; /* diagnostics: who waited for whom */
   uint64_t last_ms, last_off;
   unsigned bps;
+  double ema;                 /* smoothed bytes per second: the estimate must not jump with every sample */
+  unsigned eta;
   uint64_t total;
   uint32_t res;
 } sink;
@@ -129,11 +132,14 @@ static void writer_thread(void *arg) {
         k->off += n;
         t = now_ms();
         if (t - k->last_ms >= 1000) {
-          k->bps = (unsigned)((k->off - k->last_off) * 1000 / (t - k->last_ms));
+          double inst = (double)(k->off - k->last_off) * 1000.0 / (double)(t - k->last_ms);
+          k->bps = (unsigned)inst;
+          k->ema = k->ema > 0 ? 0.8 * k->ema + 0.2 * inst : inst;
+          k->eta = k->ema > 1.0 && k->total > k->off ? (unsigned)((double)(k->total - k->off) / k->ema) : 0;
           k->last_ms = t;
           k->last_off = k->off;
         }
-        progress(k->off, k->total, k->bps);
+        progress(k->off, k->total, k->bps, k->eta);
       }
     }
     k->tail = (k->tail + 1) % SLOTS;

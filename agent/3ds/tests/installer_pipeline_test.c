@@ -72,7 +72,7 @@ static void LightLock_Lock(LightLock *l) { (void)l; pthread_mutex_lock(&g_lockm)
 static void LightLock_Unlock(LightLock *l) { (void)l; pthread_mutex_unlock(&g_lockm); }
 static int g_fail_code; static uint64_t g_progress_last;
 static void fail(int e, uint32_t am) { (void)am; g_fail_code = e; }
-static void progress(uint64_t done, uint64_t total, unsigned bps) { (void)total; (void)bps; g_progress_last = done; }
+static void progress(uint64_t done, uint64_t total, unsigned bps, unsigned eta) { (void)total; (void)bps; (void)eta; g_progress_last = done; }
 enum { INS_E_AM = 9, INS_E_SIZE = 6, INS_E_HASH = 7 };
 static bool g_have_expect; static uint8_t g_expect[32];
 

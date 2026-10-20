@@ -32,6 +32,7 @@ typedef struct {
   int hash_expected;      /* a SHA-256 came with the request and will be checked */
   uint64_t done, total;   /* bytes so far / expected (0 = unknown) */
   unsigned bps;
+  unsigned eta_s;         /* estimated seconds left (smoothed), 0 = not known yet */
   char sha_hex[65];       /* the SHA-256 of what was installed, once it finished */
   ins_error error;
   uint32_t am_result;

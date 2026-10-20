@@ -289,8 +289,18 @@ void uii_flow_draw(const ui_model *m) {
     ui_rect(30, 150, 340, 14, COL_BAR);
     ui_rect(30, 150, 340.0f * frac, 14, COL_GREEN);
     snprintf(line, sizeof line, "%u%%   %.1f / %.1f MiB   %.2f MiB/s", (unsigned)(frac * 100.0f), (double)s->done / 1048576.0, (double)s->total / 1048576.0, (double)s->bps / 1048576.0);
-    ui_text(200, 170, 0.42f, COL_WHITE, UI_CENTER, "%s", line);
-    ui_text(200, 192, 0.4f, COL_YELLOW, UI_CENTER, "%s", UI_T("HOME and sleep are off until it finishes.", "HOME e repouso ficam desligados até terminar."));
+    ui_text(200, 168, 0.42f, COL_WHITE, UI_CENTER, "%s", line);
+    if (s->eta_s > 0) {
+      char t[40];
+      unsigned e = s->eta_s;
+      if (e >= 3600) snprintf(t, sizeof t, "%u h %02u min", e / 3600, (e / 60) % 60);
+      else if (e >= 60) snprintf(t, sizeof t, "%u min %02u s", e / 60, e % 60);
+      else snprintf(t, sizeof t, "%u s", e);
+      ui_text(200, 184, 0.45f, COL_CYAN, UI_CENTER, "%s ~%s", UI_T("Time left", "Tempo restante"), t);
+    } else {
+      ui_text(200, 184, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("Estimating the time left...", "Estimando o tempo restante..."));
+    }
+    ui_text(200, 200, 0.38f, COL_YELLOW, UI_CENTER, "%s", UI_T("HOME and sleep are off until it finishes.", "HOME e repouso ficam desligados até terminar."));
   } else if (s->state == INS_DONE) {
     ui_text(200, 150, 0.7f, COL_GREEN, UI_CENTER, "%s", UI_T("Installed", "Instalado"));
     ui_text(200, 180, 0.38f, COL_DIM, UI_CENTER, "SHA-256 %.32s...", s->sha_hex);
