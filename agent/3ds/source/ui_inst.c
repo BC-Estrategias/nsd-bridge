@@ -307,6 +307,7 @@ void uii_flow_draw(const ui_model *m) {
       ui_text(200, 184, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("Estimating the time left...", "Estimando o tempo restante..."));
     }
     ui_text(200, 200, 0.38f, COL_YELLOW, UI_CENTER, "%s", UI_T("HOME and sleep are off until it finishes.", "HOME e repouso ficam desligados até terminar."));
+    ui_text(200, 218, 0.45f, COL_WHITE, UI_CENTER, "%s", UI_T("B: Cancel   (screens dim to save battery)", "B: Cancelar   (telas apagam p/ poupar bateria)"));
   } else if (s->state == INS_DONE && s->is_bench) {
     static const char *const names[4] = {"easy", "multi 50 ms", "easy + 64K window", "multi + 64K window"};
     int i;

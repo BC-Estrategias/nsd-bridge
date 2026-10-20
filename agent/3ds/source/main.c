@@ -266,11 +266,13 @@ static int g_battery = -1;
 static bool g_qr_resume = false;
 static aptHookCookie g_apt_cookie;
 static void apt_hook(APT_HookType hook, void *param);
+static void power_wake(void);
 static char g_seed_msg[64] = "";
 static bool g_recv_open = false, g_qr_wanted = false, g_qr_restart = false, g_qr_bad = false, g_qr_inner = false;
 static void apt_hook(APT_HookType hook, void *param) {
   (void)param;
   if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) {
+    power_wake();
     g_qr_resume = qr_active();
     if (g_qr_resume) { qr_stop(); alog("QR scanner stopped (the app is being suspended)"); }
   } else if (hook == APTHOOK_ONRESTORE || hook == APTHOOK_ONWAKEUP) {
@@ -279,6 +281,47 @@ static void apt_hook(APT_HookType hook, void *param) {
   }
 }
 #endif
+
+
+/* Install-time power saving: the bottom backlight goes off after a short idle, the top one after a longer idle.
+ * Any button or touch wakes them (that first press is swallowed so it cannot cancel by accident). */
+#define PW_BOTTOM_IDLE_MS 15000
+#define PW_TOP_IDLE_MS 90000
+static bool g_lcd_ok = false, g_pw_bot_off = false, g_pw_top_off = false;
+static void power_wake(void) {
+  if (!g_lcd_ok) return;
+  if (g_pw_bot_off) { GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM); g_pw_bot_off = false; }
+  if (g_pw_top_off) { GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP); g_pw_top_off = false; }
+}
+/* Returns true when the press only woke the screens (down is cleared then). */
+static bool power_step(bool installing, u32 *down, u32 held, uint64_t now) {
+  static uint64_t last_input = 0;
+  static bool keep = false, was_installing = false;
+  bool input = (*down != 0) || (held & KEY_TOUCH);
+  bool woke = false;
+  if (!g_lcd_ok) return false;
+  if (installing && !was_installing) {
+    struct stat kb;
+    keep = stat("sdmc:/3ds/nintendo-dev-agent/config/keep-screens-on", &kb) == 0;
+    last_input = now;
+  }
+  was_installing = installing;
+  if (input) {
+    last_input = now;
+    if (g_pw_bot_off || g_pw_top_off) {
+      power_wake();
+      *down = 0;
+      woke = true;
+    }
+  }
+  if (!installing || keep) {
+    power_wake();
+    return woke;
+  }
+  if (!g_pw_bot_off && now - last_input >= PW_BOTTOM_IDLE_MS) { GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM); g_pw_bot_off = true; }
+  if (!g_pw_top_off && now - last_input >= PW_TOP_IDLE_MS) { GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP); g_pw_top_off = true; }
+  return woke;
+}
 
 static int install_url_cb(void *ctx, const char *url, const char *path, const uint8_t *sha256, const uint8_t *seed, char *detail, size_t cap) {
   (void)ctx;
@@ -728,6 +771,7 @@ int main(int argc, char **argv) {
   alog_init();
 #ifndef AGENT_TEXT_UI
   aptHook(&g_apt_cookie, apt_hook, NULL);
+  g_lcd_ok = R_SUCCEEDED(gspLcdInit());
 #endif
   g_start_ms = now_ms(NULL);
 
@@ -878,6 +922,11 @@ int main(int argc, char **argv) {
       u32 down = hidKeysDown(), held = hidKeysHeld();
       bool redraw = false;
       memset(&tp, 0, sizeof tp);
+      {
+        ins_status ps;
+        installer_get(&ps);
+        if (power_step(ps.state == INS_INSTALLING, &down, held, now_ms(NULL))) held &= ~KEY_TOUCH;
+      }
       if (held & KEY_TOUCH) hidTouchRead(&tp);
       if (access_ui_active()) {
         /* the folder editor owns the buttons and the touch screen while it is open */
@@ -1072,6 +1121,8 @@ quit:
 #endif
   alog("Exiting");
 #ifndef AGENT_TEXT_UI
+  power_wake();
+  if (g_lcd_ok) gspLcdExit();
   qr_stop();
   aptUnhook(&g_apt_cookie);
   installer_shutdown();
