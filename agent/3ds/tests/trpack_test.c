@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
   assert(c >= 5);
   for (i = 0; i < c; i++) { if (e[i].is_dir) dirs++; else files++; }
   assert(dirs == 1 && e[0].is_dir && !strcmp(e[0].name, "PRESENTES"));
+  assert(!strncmp(e[0].href, "/public.php/webdav/traducoes/ptbr/", 34) && e[0].href[strlen(e[0].href) - 1] != '/');
   assert(files == c - 1);
   {
     bool found = false;
@@ -49,6 +50,22 @@ int main(int argc, char **argv) {
     assert(dav_parse("<multistatus></multistatus>", 27, e, 32) == 0);
   }
   assert(dav_parse(NULL, 0, e, 0) == 0);
+
+  /* public links */
+  {
+    char base[100], tok[80];
+    assert(tr_parse_share("https://nextcloud.bcestrategias.com.br/s/AbCdEf123456789", base, sizeof base, tok, sizeof tok));
+    assert(!strcmp(base, "https://nextcloud.bcestrategias.com.br") && !strcmp(tok, "AbCdEf123456789"));
+    assert(tr_parse_share("https://h.example/index.php/s/Abc_123-xyz/?path=/x#y", base, sizeof base, tok, sizeof tok));
+    assert(!strcmp(base, "https://h.example") && !strcmp(tok, "Abc_123-xyz"));
+    assert(tr_parse_share("https://h.example/nc/s/Abcdef12/", base, sizeof base, tok, sizeof tok) && !strcmp(base, "https://h.example/nc"));
+    assert(!tr_parse_share("http://h.example/s/Abcdef12", base, sizeof base, tok, sizeof tok));      /* not https */
+    assert(!tr_parse_share("https://h.example/s/ab", base, sizeof base, tok, sizeof tok));           /* token too short */
+    assert(!tr_parse_share("https://h.example/s/ab cd/ef", base, sizeof base, tok, sizeof tok));     /* odd token */
+    assert(!tr_parse_share("https://h.example/files/Abcdef12", base, sizeof base, tok, sizeof tok)); /* not a share link */
+    assert(!tr_parse_share("https:///s/Abcdef12", base, sizeof base, tok, sizeof tok));
+    assert(!tr_parse_share("https://h.example/s/Abcdef12", base, 5, tok, sizeof tok));               /* buffer too small */
+  }
 
   /* url encode / decode */
   url_decode("a%20b%C3%A7%2", 13, out, sizeof out);
@@ -97,6 +114,19 @@ int main(int argc, char **argv) {
     assert(!tr_json_get(j, "formato", out, sizeof out));   /* a number, not a string */
     assert(!tr_json_get(j, "nada", out, sizeof out));
     assert(tr_json_get(j, "equipe", out, 8) && strlen(out) == 7); /* never overruns */
+  }
+  {
+    const char *j = "{\"formato\":1,\"arquivos\":[\"romfs/a.bin\", \"romfs/Pok\\u00e9mon \\\"x\\\".bin\",\"code.ips\"],\"fim\":\"ok\"}";
+    const char *p = tr_json_array(j, "arquivos");
+    assert(p);
+    assert(tr_json_array_next(&p, out, sizeof out) && !strcmp(out, "romfs/a.bin"));
+    assert(tr_json_array_next(&p, out, sizeof out) && !strcmp(out, "romfs/Pok\xC3\xA9mon \"x\".bin"));
+    assert(tr_json_array_next(&p, out, sizeof out) && !strcmp(out, "code.ips"));
+    assert(!tr_json_array_next(&p, out, sizeof out));            /* the "]" ends it */
+    assert(!tr_json_array(j, "fim") && !tr_json_array(j, "nada") && !tr_json_array(j, "formato"));
+    p = tr_json_array("{\"a\":[\"x\",\"yyyyyyyyyy\"]}", "a");
+    assert(tr_json_array_next(&p, out, 4) && !strcmp(out, "x"));
+    assert(tr_json_array_next(&p, out, 4) && strlen(out) == 3);   /* cut, never overrun */
   }
   {
     char esc[64];

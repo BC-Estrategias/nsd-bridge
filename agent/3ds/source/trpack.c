@@ -74,9 +74,10 @@ static bool find_tag(const char *s, const char *end, const char *name, const cha
   return false;
 }
 
-int dav_parse(const char *xml, size_t n, dav_entry *out, int max) {
+int dav_parse_cb(const char *xml, size_t n, int (*cb)(const dav_entry *e, void *ud), void *ud) {
   const char *end = xml + n, *p = xml;
   int count = 0, idx = 0;
+  if (!xml) return 0;
   while (p < end) {
     const char *rc, *re, *after, *hc, *he;
     char href[512], dec[512];
@@ -97,14 +98,57 @@ int dav_parse(const char *xml, size_t n, dav_entry *out, int max) {
     seg = seg ? seg + 1 : dec;
     memset(&e, 0, sizeof e);
     snprintf(e.name, sizeof e.name, "%s", seg);
+    snprintf(e.href, sizeof e.href, "%s", dec);
     {
       const char *cc, *ce;
       e.is_dir = find_tag(rc, re, "collection", &cc, &ce, NULL);
       if (!e.is_dir && find_tag(rc, re, "getcontentlength", &cc, &ce, NULL)) e.size = strtoull(cc, NULL, 10);
     }
-    if (e.name[0] && count < max) out[count++] = e;
+    if (e.name[0]) {
+      count++;
+      if (cb(&e, ud)) break;
+    }
   }
   return count;
+}
+
+typedef struct { dav_entry *out; int max, n; } dav_collect;
+static int dav_collect_cb(const dav_entry *e, void *ud) {
+  dav_collect *c = ud;
+  if (c->n < c->max) c->out[c->n++] = *e;
+  return c->n >= c->max;
+}
+
+int dav_parse(const char *xml, size_t n, dav_entry *out, int max) {
+  dav_collect c = {out, max, 0};
+  if (max <= 0) return 0;
+  dav_parse_cb(xml, n, dav_collect_cb, &c);
+  return c.n;
+}
+
+bool tr_parse_share(const char *url, char *base, size_t base_cap, char *token, size_t token_cap) {
+  const char *s, *host_end, *p, *tok;
+  size_t i, bl, tl;
+  char tmp[400];
+  if (strncmp(url, "https://", 8) != 0) return false;
+  snprintf(tmp, sizeof tmp, "%s", url);
+  for (i = 0; tmp[i]; i++) if (tmp[i] == '?' || tmp[i] == '#') { tmp[i] = '\0'; break; }
+  while (i > 0 && tmp[i - 1] == '/') tmp[--i] = '\0';
+  host_end = strchr(tmp + 8, '/');
+  if (!host_end || host_end == tmp + 8) return false;
+  s = strstr(host_end, "/s/");
+  if (!s) return false;
+  tok = s + 3;
+  tl = strlen(tok);
+  if (tl < 6 || tl > 64) return false;
+  for (p = tok; *p; p++) if (!(isalnum((unsigned char)*p) || *p == '-' || *p == '_')) return false;
+  bl = (size_t)(s - tmp);
+  if (bl > 8 && !strncmp(tmp + bl - 10, "/index.php", 10)) bl -= 10;
+  if (bl + 1 > base_cap || tl + 1 > token_cap) return false;
+  memcpy(base, tmp, bl);
+  base[bl] = '\0';
+  memcpy(token, tok, tl + 1);
+  return true;
 }
 
 /* ------------------------------------------------------------------------------------------------ packs */
@@ -174,50 +218,85 @@ bool tr_path_ok(const char *rel) {
 }
 
 /* ------------------------------------------------------------------------------------------------ JSON */
+/* q points just after an opening quote; decodes up to the closing quote, leaves q after it. */
+static void json_string(const char **qq, char *out, size_t cap) {
+  const char *q = *qq;
+  size_t o = 0;
+  while (*q && *q != '"') {
+    if (*q == '\\' && q[1]) {
+      q++;
+      switch (*q) {
+        case 'n': if (o + 1 < cap) out[o++] = '\n'; break;
+        case 't': if (o + 1 < cap) out[o++] = '\t'; break;
+        case 'u':
+          if (isxdigit((unsigned char)q[1]) && isxdigit((unsigned char)q[2]) && isxdigit((unsigned char)q[3]) && isxdigit((unsigned char)q[4])) {
+            char h[5] = {q[1], q[2], q[3], q[4], 0};
+            unsigned long cp = strtoul(h, NULL, 16);
+            if (cp < 0x80) { if (o + 1 < cap) out[o++] = (char)cp; }
+            else if (cp < 0x800) { if (o + 2 < cap) { out[o++] = (char)(0xC0 | (cp >> 6)); out[o++] = (char)(0x80 | (cp & 0x3F)); } }
+            else if (o + 3 < cap) { out[o++] = (char)(0xE0 | (cp >> 12)); out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[o++] = (char)(0x80 | (cp & 0x3F)); }
+            q += 4;
+          }
+          break;
+        default: if (o + 1 < cap) out[o++] = *q; break;
+      }
+      q++;
+    } else {
+      if (o + 1 < cap) out[o++] = *q;
+      q++;
+    }
+  }
+  if (*q == '"') q++;
+  if (cap) out[o < cap ? o : cap - 1] = '\0';
+  *qq = q;
+}
+
 bool tr_json_get(const char *json, const char *key, char *out, size_t cap) {
   char pat[80];
   const char *p = json;
-  size_t o = 0;
   if (!cap) return false;
   snprintf(pat, sizeof pat, "\"%s\"", key);
   for (;;) {
+    const char *q;
     p = strstr(p, pat);
     if (!p) return false;
-    {
-      const char *q = p + strlen(pat);
-      while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
-      if (*q != ':') { p += 1; continue; }
-      q++;
-      while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
-      if (*q != '"') return false;
-      q++;
-      while (*q && *q != '"' && o + 1 < cap) {
-        if (*q == '\\' && q[1]) {
-          q++;
-          switch (*q) {
-            case 'n': out[o++] = '\n'; break;
-            case 't': out[o++] = '\t'; break;
-            case 'u':
-              if (isxdigit((unsigned char)q[1]) && isxdigit((unsigned char)q[2]) && isxdigit((unsigned char)q[3]) && isxdigit((unsigned char)q[4])) {
-                char h[5] = {q[1], q[2], q[3], q[4], 0};
-                unsigned long cp = strtoul(h, NULL, 16);
-                if (cp < 0x80) out[o++] = (char)cp;
-                else if (cp < 0x800 && o + 2 < cap) { out[o++] = (char)(0xC0 | (cp >> 6)); out[o++] = (char)(0x80 | (cp & 0x3F)); }
-                else if (o + 3 < cap) { out[o++] = (char)(0xE0 | (cp >> 12)); out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[o++] = (char)(0x80 | (cp & 0x3F)); }
-                q += 4;
-              }
-              break;
-            default: out[o++] = *q; break;
-          }
-          q++;
-        } else {
-          out[o++] = *q++;
-        }
-      }
-      out[o] = '\0';
-      return true;
-    }
+    q = p + strlen(pat);
+    while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    if (*q != ':') { p += 1; continue; }
+    q++;
+    while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    if (*q != '"') return false;
+    q++;
+    json_string(&q, out, cap);
+    return true;
   }
+}
+
+const char *tr_json_array(const char *json, const char *key) {
+  char pat[80];
+  const char *p = json;
+  snprintf(pat, sizeof pat, "\"%s\"", key);
+  for (;;) {
+    const char *q;
+    p = strstr(p, pat);
+    if (!p) return NULL;
+    q = p + strlen(pat);
+    while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    if (*q != ':') { p += 1; continue; }
+    q++;
+    while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    return *q == '[' ? q + 1 : NULL;
+  }
+}
+
+bool tr_json_array_next(const char **p, char *out, size_t cap) {
+  const char *q = *p;
+  while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n' || *q == ',') q++;
+  if (*q != '"') return false;
+  q++;
+  json_string(&q, out, cap);
+  *p = q;
+  return true;
 }
 
 size_t tr_json_escape(const char *in, char *out, size_t cap) {
