@@ -20,21 +20,30 @@ static C3D_Tex icon_tex;
 static bool icon_inited, icon_have;
 static const void *icon_key;
 
+#define N_FILTERS 6
 static const char *filter_name(void) {
   switch (filter) {
-    case 0: return UI_T("Apps and games", "Apps e jogos");
-    case 1: return UI_T("Updates and DLC", "Atualizações e DLC");
-    case 2: return UI_T("System", "Sistema");
+    case 0: return UI_T("Games", "Jogos");
+    case 1: return UI_T("Updates and DLC", "Atualizações e DLCs");
+    case 2: return "DSiWare";
+    case 3: return "Apps";
+    case 4: return UI_T("System", "Sistema");
     default: return UI_T("All", "Todos");
   }
 }
 static const char *sort_name(void) { return sortk == 0 ? UI_T("by name", "por nome") : sortk == 1 ? UI_T("by size", "por tamanho") : UI_T("by ID", "por ID"); }
 
+/* The system calls games and homebrew apps the same thing. Official titles have low unique IDs (the low half of the title ID
+ * is below 0x04000000); homebrew CIAs, NSD Bridge included, use high ones. A guess, good for a list filter. */
+static bool is_game(const title_entry *t) { return t->kind == KIND_APP && (uint32_t)t->id < 0x04000000u; }
+
 static bool in_filter(const title_entry *t) {
   switch (filter) {
-    case 0: return t->kind == KIND_APP || t->kind == KIND_DSIWARE;
+    case 0: return is_game(t);
     case 1: return t->kind == KIND_UPDATE || t->kind == KIND_DLC;
-    case 2: return t->kind == KIND_SYSTEM;
+    case 2: return t->kind == KIND_DSIWARE;
+    case 3: return t->kind == KIND_APP && !is_game(t);
+    case 4: return t->kind == KIND_SYSTEM;
     default: return true;
   }
 }
@@ -131,7 +140,7 @@ void uit_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bo
   if (busy()) { *redraw = true; return; } /* keep the "working" screen fresh; no input while AM works */
   if (st == TU_LIST) {
     if ((down & (KEY_B | KEY_START)) || ((down & KEY_TOUCH) && tap_in(touch, 0, 20, 320, 40))) { *leave = true; *redraw = true; return; }
-    if (down & KEY_X) { filter = (filter + 1) % 4; sel = top = 0; view_rebuild(); *redraw = true; return; }
+    if (down & KEY_X) { filter = (filter + 1) % N_FILTERS; sel = top = 0; view_rebuild(); *redraw = true; return; }
     if (down & KEY_Y) { sortk = (sortk + 1) % 3; view_rebuild(); *redraw = true; return; }
     if (down & KEY_SELECT) { st = TU_PENDING; psel = ptop = 0; msg_is_pending = true; titles_pending_load(); *redraw = true; return; }
     list_move(&sel, &top, nview, down, held, touch, redraw, &tapped);
