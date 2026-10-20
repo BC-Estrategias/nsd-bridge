@@ -607,6 +607,11 @@ static void build_model(ui_model *m, uint64_t now) {
   int i;
   memset(m, 0, sizeof *m);
   m->version = NDP_AGENT_VERSION;
+#ifdef NDEV_BUILD_TAG
+  m->build_tag = NDEV_BUILD_TAG;
+#else
+  m->build_tag = "";
+#endif
   m->net = g_listening ? 3 : !g_wifi ? 1 : g_err[0] ? 2 : 0;
   m->err = g_err;
   if (g_listening) {

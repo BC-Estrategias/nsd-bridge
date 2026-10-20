@@ -14,7 +14,7 @@
 #include "ndp/ndp_sha256.h"
 
 /* ---- shims for what libctru provides ---- */
-typedef uint32_t u32; typedef int32_t s32; typedef int32_t Result; typedef uint32_t Handle; typedef int FS_MediaType;
+typedef uint32_t u32; typedef uint64_t u64; typedef int32_t s32; typedef int32_t Result; typedef uint32_t Handle; typedef int FS_MediaType;
 #define MEDIATYPE_SD 1
 #define MEDIATYPE_NAND 0
 #define R_FAILED(r) ((r) < 0)
@@ -22,7 +22,10 @@ typedef uint32_t u32; typedef int32_t s32; typedef int32_t Result; typedef uint3
 #define CUR_THREAD_HANDLE 0xFFFF8000u
 typedef struct { pthread_mutex_t m; pthread_cond_t c; int n; } LightSemaphore; /* portable: macOS has no unnamed POSIX semaphores */
 typedef pthread_t *Thread;
-typedef struct { int on_nand; uint64_t title_id; uint64_t total_size; } cia_info;
+typedef struct { int on_nand; uint64_t title_id; uint64_t total_size; int cls; } cia_info;
+enum { CIA_CLASS_APP = 0 };
+static int g_seed_calls;
+static int seed_register(uint64_t id) { (void)id; g_seed_calls++; return 2; }
 static void LightSemaphore_Init(LightSemaphore *s, int init, int max) { (void)max; pthread_mutex_init(&s->m, NULL); pthread_cond_init(&s->c, NULL); s->n = init; }
 static void LightSemaphore_Acquire(LightSemaphore *s, int n) { pthread_mutex_lock(&s->m); while (s->n < n) pthread_cond_wait(&s->c, &s->m); s->n -= n; pthread_mutex_unlock(&s->m); }
 static void LightSemaphore_Release(LightSemaphore *s, int n) { pthread_mutex_lock(&s->m); s->n += n; pthread_cond_broadcast(&s->c); pthread_mutex_unlock(&s->m); }
@@ -38,6 +41,7 @@ static void threadFree(Thread t) { free(t); }
 static uint64_t svcGetSystemTick(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ((uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec) * SYSCLOCK_ARM11 / 1000000000ull; }
 static void svcGetThreadPriority(s32 *p, u32 h) { (void)h; *p = 0x30; }
 static void alog(const char *f, ...) { (void)f; }
+static void touch(void) {}
 
 /* ---- the mocked AM / file: records what was written, in order, with controllable speed and failure ---- */
 static uint8_t *g_out; static uint64_t g_out_len, g_out_cap;
@@ -63,7 +67,7 @@ static Result AM_DeleteTicket(uint64_t id) { (void)id; return 0; }
 static Result AM_QueryAvailableExternalTitleDatabase(void *p) { (void)p; return 0; }
 
 /* ---- the pieces of installer.c the section needs ---- */
-static struct { char sha_hex[65]; } g_st;
+static struct { char sha_hex[65]; int seed; } g_st;
 static pthread_mutex_t g_lockm = PTHREAD_MUTEX_INITIALIZER;
 typedef int LightLock;
 #define g_lock g_lockdummy
@@ -83,7 +87,7 @@ static void fill(uint8_t *p, size_t n, unsigned seed) { size_t i; for (i = 0; i 
 
 /* feeds `total` bytes in pieces of random sizes (like a download), optionally sleeping, then finishes */
 static bool run(size_t total, int producer_delay_us, int abort_after_bytes, uint8_t *src) {
-  sink k; cia_info ci = {0, 0x000400000BD00200ull, total};
+  sink k; cia_info ci = {0, 0x000400000BD00200ull, total, 0};
   size_t pos = 0; bool ok = true; unsigned r = 7;
   memset(&k, 0, sizeof k);
   g_out_len = 0; g_calls = 0; g_fail_code = 0; g_cancelled_am = 0;
@@ -139,12 +143,13 @@ int main(void) {
   }
   /* the size check: handing over fewer bytes than the header says */
   {
-    sink k; cia_info ci = {0, 1, 5 * BLOCK};
+    sink k; cia_info ci = {0, 1, 5 * BLOCK, 0};
     memset(&k, 0, sizeof k); g_write_delay_us = 0; g_have_expect = false; g_out_len = 0; g_cancelled_am = 0;
     assert(sink_open(&k, &ci, 0));
     assert(sink_write(&k, src, 3 * BLOCK, ci.total_size));
     assert(!sink_finish(&k, &ci) && g_fail_code == INS_E_SIZE && g_cancelled_am == 1);
   }
+  assert(g_seed_calls > 0 && "a successful install asks for the seed");
   puts("installer pipeline: all ok");
   return 0;
 }

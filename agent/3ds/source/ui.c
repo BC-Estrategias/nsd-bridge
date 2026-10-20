@@ -274,7 +274,7 @@ static void draw_top(const ui_model *m) {
   ui_scene_top(COL_TOP_BG);
   ui_rect(0, 0, 400, 24, COL_TOP_HDR);
   ui_text(8, 3, 0.6f, COL_CYAN, 0, "NSD Bridge");
-  ui_text(392, 5, 0.45f, COL_DIM, UI_RIGHT, "v%s  -  BC Labs", m->version);
+  ui_text(392, 5, 0.45f, m->build_tag[0] ? COL_YELLOW : COL_DIM, UI_RIGHT, "v%s%s%s  -  BC Labs", m->version, m->build_tag[0] ? " " : "", m->build_tag);
   ui_battery(276, 5, m->battery, m->charging, m->adapter);
 
   ui_text(12, 32, 0.7f, net_col[m->net], 0, "%s", ui_pt() ? net_pt[m->net] : net_en[m->net]);

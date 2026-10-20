@@ -42,6 +42,7 @@ typedef enum {
 /* A snapshot of the app state, rebuilt by main.c before each draw. */
 typedef struct {
   const char *version;
+  const char *build_tag;   /* "" for a release; "test9" for a test build */
   int net;               /* 0 starting, 1 waiting for Wi-Fi, 2 error, 3 online */
   const char *err;
   char ip[16];

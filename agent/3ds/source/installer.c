@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "alog.h"
 #include "ndp/ndp_defs.h"
@@ -108,6 +109,7 @@ static uint64_t now_ms(void) { return svcGetSystemTick() / (SYSCLOCK_ARM11 / 100
 static uint64_t g_am_ms, g_start_ms; /* time spent inside AM writes / since the install started (diagnostics) */
 
 static void sink_release(sink *k);
+static int seed_register(u64 title_id); /* defined below, with the other network code */
 
 static void writer_thread(void *arg) {
   sink *k = arg;
@@ -275,10 +277,74 @@ static bool sink_finish(sink *k, const cia_info *ci) {
   sink_release(k);
   if (R_FAILED(rc)) { fail(INS_E_AM, (uint32_t)rc); return false; }
   if (k->dest == MEDIATYPE_SD) AM_QueryAvailableExternalTitleDatabase(NULL);
+  /* applications and updates of the retail line may need a seed; DSiWare and system titles never do */
+  if (ci->cls == CIA_CLASS_APP) {
+    int sd = seed_register(ci->title_id);
+    LightLock_Lock(&g_lock);
+    g_st.seed = sd;
+    touch();
+    LightLock_Unlock(&g_lock);
+  }
   return true;
 }
 
 /* ---------------------------------------------------------------------------------------------------- probing */
+/* ------------------------------------------------------------------------------------------------------- seeds */
+/* Titles released since 2015 are encrypted with a per-title "seed" that Nintendo's seed server hands out; without it the
+ * system's loader cannot open the game (it crashes in `loader`). FBI fetches and registers it after every install; so do we.
+ * The request goes through the system's own HTTP service (which trusts Nintendo's certificates, unlike our bundle) and only
+ * carries the title ID and the console's region. A title that needs no seed makes the server answer 404: that is fine. */
+static Result fs_add_seed(u64 title_id, const uint8_t seed[16]) {
+  u32 *cmd = getThreadCommandBuffer();
+  Result ret;
+  cmd[0] = 0x087A0180; /* FS:USER AddSeed */
+  cmd[1] = (u32)(title_id & 0xFFFFFFFF);
+  cmd[2] = (u32)(title_id >> 32);
+  memcpy(&cmd[3], seed, 16);
+  if (R_FAILED(ret = svcSendSyncRequest(*fsGetSessionHandle()))) return ret;
+  return (Result)cmd[1];
+}
+
+static int seed_register(u64 title_id) {
+  static const char *const country[] = {"JP", "US", "GB", "GB", "HK", "KR", "TW"};
+  uint8_t seed[16];
+  char url[128];
+  u8 region = CFG_REGION_USA;
+  u32 status = 0, got = 0;
+  httpcContext ctx;
+  Result rc;
+  int result = 3;
+  struct stat nb;
+  if (stat("sdmc:/3ds/nintendo-dev-agent/config/no-seed-download", &nb) == 0) { alog("Install: seed download is turned off (config/no-seed-download)"); return 0; }
+  CFGU_SecureInfoGetRegion(&region);
+  if (region > CFG_REGION_TWN) region = CFG_REGION_USA;
+  snprintf(url, sizeof url, "https://kagiya-ctr.cdn.nintendo.net/title/0x%016llX/ext_key?country=%s", (unsigned long long)title_id, country[region]);
+  if (R_FAILED(rc = httpcInit(0x4000))) { alog("Install: seed: httpcInit 0x%08lX", (unsigned long)rc); return 3; }
+  if (R_SUCCEEDED(rc = httpcOpenContext(&ctx, HTTPC_METHOD_GET, url, 1))) {
+    if (R_SUCCEEDED(rc = httpcAddRequestHeaderField(&ctx, "User-Agent", "NSD-Bridge/" NDP_AGENT_VERSION)) && R_SUCCEEDED(rc = httpcBeginRequest(&ctx)) &&
+        R_SUCCEEDED(rc = httpcGetResponseStatusCodeTimeout(&ctx, &status, 15ull * 1000000000ull))) {
+      if (status == 200 && R_SUCCEEDED(rc = httpcDownloadData(&ctx, seed, sizeof seed, &got)) && got == sizeof seed) {
+        rc = fs_add_seed(title_id, seed);
+        if (R_SUCCEEDED(rc)) result = 1;
+        alog("Install: seed registered, result 0x%08lX", (unsigned long)rc);
+      } else if (status == 404 || status == 403) {
+        result = 2;
+        alog("Install: no seed on the server (HTTP %lu): this title does not use one", (unsigned long)status);
+      } else {
+        alog("Install: seed request: HTTP %lu, download 0x%08lX, %lu bytes", (unsigned long)status, (unsigned long)rc, (unsigned long)got);
+      }
+    } else {
+      alog("Install: seed request failed 0x%08lX", (unsigned long)rc);
+    }
+    httpcCloseContext(&ctx);
+  } else {
+    alog("Install: seed: httpcOpenContext 0x%08lX", (unsigned long)rc);
+  }
+  httpcExit();
+  return result;
+}
+
+
 static bool enough_space(const cia_info *ci) {
   FS_ArchiveResource r;
   if (ci->on_nand) return true; /* AM reports the NAND case itself */

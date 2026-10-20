@@ -33,6 +33,7 @@ typedef struct {
   uint64_t done, total;   /* bytes so far / expected (0 = unknown) */
   unsigned bps;
   unsigned eta_s;         /* estimated seconds left (smoothed), 0 = not known yet */
+  int seed;               /* after an install: 0 not tried, 1 registered, 2 the title needs none, 3 could not get it */
   char sha_hex[65];       /* the SHA-256 of what was installed, once it finished */
   ins_error error;
   uint32_t am_result;

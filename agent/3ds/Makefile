@@ -19,7 +19,8 @@ INCLUDES    := source third_party/quirc ../common/include ../posix/include ../we
 AGENT_VERSION   := $(shell sed -n 's/^\#define NDP_AGENT_VERSION "\(.*\)"$$/\1/p' $(TOPDIR)/../common/include/ndp/ndp_defs.h)
 APP_TITLE       := NSD Bridge
 # shown by the HOME button ("suspended software") and in the Homebrew Launcher: the name and the version first
-APP_DESCRIPTION := NSD Bridge v$(AGENT_VERSION) - SD bridge
+# NDEV_TAG=test9 marks a test build (shown on the screen header and in the HOME text); releases have none
+APP_DESCRIPTION := NSD Bridge v$(AGENT_VERSION)$(if $(NDEV_TAG), $(NDEV_TAG),) - SD bridge
 APP_AUTHOR      := BC Labs
 ICON            := icon.png
 
@@ -31,6 +32,9 @@ ifeq ($(NDEV_DEV),1)
 CFLAGS  += -DAGENT_START_MODE=NDP_MODE_DEVELOPMENT
 endif
 # NDEV_TEXT_UI=1 builds the old text-console UI instead of the graphical (citro2d) one
+ifneq ($(strip $(NDEV_TAG)),)
+CFLAGS  += -DNDEV_BUILD_TAG=\"$(NDEV_TAG)\"
+endif
 ifeq ($(NDEV_TEXT_UI),1)
 CFLAGS  += -DAGENT_TEXT_UI
 endif
