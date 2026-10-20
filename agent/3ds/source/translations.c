@@ -749,7 +749,8 @@ static uint64_t g_inst_start;
 static uint64_t g_ms_sd, g_ms_net, g_ms_open, g_ms_close, g_ms_ren;     /* diagnostics: time in file operations / in the network calls */
 static long g_connects;                 /* diagnostics: new HTTPS connections opened by an install, and the time spent waiting */
 static double g_sum_tls, g_sum_first;
-typedef struct { CURL *c; FILE *f; unsigned idx; uint64_t got; bool active; char tmp[340], dst[330]; } slot;
+#define WBUF (128u * 1024u) /* what is handed to the card in one write: it is very slow with the 16 KiB pieces a download delivers */
+typedef struct { CURL *c; FILE *f; char *wbuf; unsigned idx; uint64_t got; bool active; char tmp[340], dst[330]; } slot;
 static size_t sink_slot(char *ptr, size_t a, size_t b, void *ud) {
   slot *x = ud;
   size_t n = a * b;
@@ -798,7 +799,7 @@ static void job_install(void) {
     g_connects = 0;
     g_sum_tls = g_sum_first = 0;
     g_ms_sd = g_ms_net = g_ms_open = g_ms_close = g_ms_ren = 0;
-    for (k = 0; k < g_par; k++) { sl[k].c = curl_easy_init(); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
+    for (k = 0; k < g_par; k++) { sl[k].c = curl_easy_init(); sl[k].wbuf = malloc(WBUF); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
     while ((next < g_nf || active > 0) && !cancelled() && !bad) {
       CURLMsg *msg;
       int left;
@@ -817,6 +818,7 @@ static void job_install(void) {
         snprintf(s2->tmp, sizeof s2->tmp, "%s.nsdtmp", s2->dst);
         snprintf(src, sizeof src, "%s/arquivos/%s", pk.path, rel);
         s2->f = fopen(s2->tmp, "wb");
+        if (s2->f && s2->wbuf) setvbuf(s2->f, s2->wbuf, _IOFBF, WBUF);
         g_ms_open += now_ms() - t_b;
         if (!s2->f) { fail(TRE_IO, rel); bad = true; break; }
         s2->got = 0;
@@ -889,6 +891,7 @@ static void job_install(void) {
     for (k = 0; k < g_par; k++) {
       if (sl[k].active) { curl_multi_remove_handle(g_mh, sl[k].c); if (sl[k].f) fclose(sl[k].f); remove(sl[k].tmp); sl[k].active = false; }
       if (sl[k].c) curl_easy_cleanup(sl[k].c);
+      free(sl[k].wbuf);
     }
     if (bad) goto out;
     LightLock_Lock(&g_lock);
