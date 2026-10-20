@@ -62,10 +62,12 @@ void ui_scene_bottom(uint32_t bg) {
   C2D_TargetClear(g_bot, bg);
   C2D_SceneBegin(g_bot);
 }
-void ui_battery(float x, float y, int percent, bool charging) {
+void ui_battery(float x, float y, int percent, bool charging, bool adapter) {
+  /* green while charging; when the charger is in but it is not charging (full), say so instead of showing nothing */
+  const char *state = charging ? UI_T("charging", "carregando") : adapter ? UI_T("plugged in", "na tomada") : "";
+  uint32_t col = charging || adapter ? UI_RGB(0x6b, 0xd0, 0x6b) : percent < 15 ? UI_RGB(0xf0, 0x5a, 0x50) : percent < 30 ? UI_RGB(0xf0, 0xc8, 0x3c) : UI_RGB(0xb8, 0xc0, 0xcc);
   if (percent < 0) return;
-  ui_text(x, y, 0.45f, percent < 15 && !charging ? UI_RGB(0xf0, 0x5a, 0x50) : percent < 30 && !charging ? UI_RGB(0xf0, 0xc8, 0x3c) : UI_RGB(0xb8, 0xc0, 0xcc), UI_RIGHT, "%s %d%%%s",
-          UI_T("Battery", "Bateria"), percent, charging ? "+" : "");
+  ui_text(x, y, 0.45f, col, UI_RIGHT, "%s %d%%%s%s", UI_T("Battery", "Bateria"), percent, state[0] ? "  " : "", state);
 }
 
 void ui_rect(float x, float y, float w, float h, uint32_t color) { C2D_DrawRectSolid(x, y, 0.5f, w, h, color); }
@@ -272,7 +274,7 @@ static void draw_top(const ui_model *m) {
   ui_rect(0, 0, 400, 24, COL_TOP_HDR);
   ui_text(8, 3, 0.6f, COL_CYAN, 0, "NSD Bridge");
   ui_text(392, 5, 0.45f, COL_DIM, UI_RIGHT, "v%s  -  BC Labs", m->version);
-  ui_battery(262, 5, m->battery, m->charging);
+  ui_battery(276, 5, m->battery, m->charging, m->adapter);
 
   ui_text(12, 32, 0.7f, net_col[m->net], 0, "%s", ui_pt() ? net_pt[m->net] : net_en[m->net]);
   if (m->net == 3) {

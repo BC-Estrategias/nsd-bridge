@@ -245,7 +245,7 @@ void uii_flow_draw(const ui_model *m) {
   ui_rect(0, 0, 400, 24, COL_TOP_HDR);
   ui_text(8, 3, 0.6f, COL_CYAN, 0, "%s", UI_T("Installer", "Instalador"));
   ui_text(392, 5, 0.45f, COL_DIM, UI_RIGHT, "%s", s->is_url ? UI_T("from a URL", "de uma URL") : UI_T("from the SD card", "do cartão SD"));
-  ui_battery(262, 5, m->battery, m->charging);
+  ui_battery(276, 5, m->battery, m->charging, m->adapter);
   if (s->is_url) ui_text(12, y, 0.5f, COL_WHITE, 0, "%.60s", s->host);
   else ui_text(12, y, 0.42f, COL_WHITE, 0, "%.64s", s->source);
   y += 22;

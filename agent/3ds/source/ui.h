@@ -64,7 +64,7 @@ typedef struct {
   bool forget_armed, keys_warn;
   char sd_free[24];      /* "13.7 GiB" or "" */
   unsigned long uptime_s, requests;
-  bool is_new3ds, recv_open, charging;
+  bool is_new3ds, recv_open, charging, adapter;   /* charging now; the charger is plugged in */
   int battery;           /* percent, -1 when unknown */
   bool qr_on, qr_inner, qr_bad;   /* scanner: camera running, which one, the last code was not an http(s) address */
   char qr_err[64];
@@ -96,7 +96,7 @@ void ui_draw(const ui_model *m);
 #define UI_LIST_Y 40
 #define UI_LIST_ROWS 8
 /* "85%" or "85%+" (charging); draws nothing when unknown. Right-aligned at x. */
-void ui_battery(float x, float y, int percent, bool charging);
+void ui_battery(float x, float y, int percent, bool charging, bool adapter);
 void ui_begin(void);                    /* starts a frame */
 void ui_end(void);                      /* presents it */
 void ui_scene_top(uint32_t bg);         /* 400x240 */
