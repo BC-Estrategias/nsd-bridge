@@ -52,5 +52,6 @@ bool installer_start_url(const char *url, const uint8_t *sha256);
 void installer_confirm(bool yes);   /* answer to INS_CONFIRM */
 void installer_cancel(void);        /* stop an install in progress */
 void installer_dismiss(void);       /* leave INS_DONE / INS_ERROR: back to INS_IDLE */
+void installer_import_seeds(char *msg, size_t cap);  /* register the .dat files of /fbi/seed; msg gets "N registered, M failed" */
 
 #endif

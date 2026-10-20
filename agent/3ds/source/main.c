@@ -266,6 +266,7 @@ static int g_battery = -1;
 static bool g_qr_resume = false;
 static aptHookCookie g_apt_cookie;
 static void apt_hook(APT_HookType hook, void *param);
+static char g_seed_msg[64] = "";
 static bool g_recv_open = false, g_qr_wanted = false, g_qr_restart = false, g_qr_bad = false, g_qr_inner = false;
 static void apt_hook(APT_HookType hook, void *param) {
   (void)param;
@@ -659,6 +660,7 @@ static void build_model(ui_model *m, uint64_t now) {
   m->battery = g_battery;
   m->charging = g_charging;
   m->adapter = g_adapter;
+  snprintf(m->seed_msg, sizeof m->seed_msg, "%s", g_seed_msg);
   m->qr_on = qr_active();
   m->qr_inner = qr_active() ? qr_inner() : g_qr_inner;
   m->qr_bad = g_qr_bad;
@@ -947,6 +949,7 @@ int main(int argc, char **argv) {
           case UI_INST_QR_ON: g_qr_wanted = true; g_qr_bad = false; g_qr_restart = false; (void)qr_start(g_qr_inner); break;
           case UI_INST_QR_OFF: g_qr_wanted = false; qr_stop(); break;
           case UI_INST_QR_SWITCH: g_qr_inner = !g_qr_inner; qr_stop(); (void)qr_start(g_qr_inner); break;
+          case UI_INST_SEEDS: installer_import_seeds(g_seed_msg, sizeof g_seed_msg); alog("Seeds: %s", g_seed_msg); break;
           case UI_INST_YES: installer_confirm(true); break;
           case UI_INST_NO: installer_confirm(false); break;
           case UI_INST_CANCEL: installer_cancel(); break;

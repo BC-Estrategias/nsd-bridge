@@ -29,6 +29,7 @@ typedef enum {
   UI_INST_QR_ON,    /* the QR scanner screen opened (camera on) */
   UI_INST_QR_OFF,
   UI_INST_QR_SWITCH, /* X on the scanner: the other camera */
+  UI_INST_SEEDS,     /* register the seed files in /fbi/seed */
   UI_INST_YES,      /* answers to the install confirmation / progress / result screens */
   UI_INST_NO,
   UI_INST_CANCEL,
@@ -69,6 +70,7 @@ typedef struct {
   int battery;           /* percent, -1 when unknown */
   bool qr_on, qr_inner, qr_bad;   /* scanner: camera running, which one, the last code was not an http(s) address */
   char qr_err[64];
+  char seed_msg[64];     /* result of the last "register seeds" */
   char recv_addr[48];    /* what the page/ndev should reach: "192.168.1.5:8080" */
   ins_status ins;
   upd_state upd;

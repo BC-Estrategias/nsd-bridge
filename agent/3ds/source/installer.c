@@ -6,7 +6,9 @@
 #include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <dirent.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 #include "alog.h"
@@ -315,6 +317,23 @@ static int seed_register(u64 title_id) {
   Result rc;
   int result = 3;
   struct stat nb;
+  {
+    /* a seed file in FBI's place wins (the hShop page offers it for download): it works with no internet, or when the
+     * console talks to a replacement network instead of Nintendo's */
+    char path[96];
+    FILE *f;
+    snprintf(path, sizeof path, "sdmc:/fbi/seed/%016llX.dat", (unsigned long long)title_id);
+    f = fopen(path, "rb");
+    if (f) {
+      size_t n = fread(seed, 1, sizeof seed, f);
+      fclose(f);
+      if (n == sizeof seed) {
+        rc = fs_add_seed(title_id, seed);
+        alog("Install: seed from /fbi/seed/%016llX.dat, result 0x%08lX", (unsigned long long)title_id, (unsigned long)rc);
+        return R_SUCCEEDED(rc) ? 1 : 3;
+      }
+    }
+  }
   if (stat("sdmc:/3ds/nintendo-dev-agent/config/no-seed-download", &nb) == 0) { alog("Install: seed download is turned off (config/no-seed-download)"); return 0; }
   CFGU_SecureInfoGetRegion(&region);
   if (region > CFG_REGION_TWN) region = CFG_REGION_USA;
@@ -661,5 +680,28 @@ void installer_shutdown(void) {
   installer_cancel();
   if (g_worker) { threadJoin(g_worker, UINT64_MAX); threadFree(g_worker); g_worker = NULL; }
   g_init = false;
+}
+
+/* Registers every seed file in /fbi/seed (<TITLEID>.dat, 16 bytes) with the system, for games installed without one. */
+void installer_import_seeds(char *msg, size_t cap) {
+  DIR *d = opendir("sdmc:/fbi/seed");
+  struct dirent *e;
+  int ok = 0, bad = 0;
+  if (!d) { snprintf(msg, cap, "%s", "no /fbi/seed folder"); return; }
+  while ((e = readdir(d)) != NULL) {
+    unsigned long long id = 0;
+    char path[128], tail[8];
+    FILE *f;
+    uint8_t seed[16];
+    if (sscanf(e->d_name, "%16llX.%7s", &id, tail) != 2 || strcasecmp(tail, "dat") != 0 || strlen(e->d_name) != 20) continue;
+    snprintf(path, sizeof path, "sdmc:/fbi/seed/%s", e->d_name);
+    f = fopen(path, "rb");
+    if (!f) { bad++; continue; }
+    if (fread(seed, 1, sizeof seed, f) == sizeof seed && R_SUCCEEDED(fs_add_seed((u64)id, seed))) { ok++; alog("Seed registered from %s", e->d_name); }
+    else { bad++; alog("Seed file %s could not be registered", e->d_name); }
+    fclose(f);
+  }
+  closedir(d);
+  snprintf(msg, cap, "%d registered, %d failed", ok, bad);
 }
 #endif /* !AGENT_TEXT_UI */
