@@ -1,5 +1,8 @@
 #include "trpack.h"
 
+/* Copies into fixed buffers are bounded on purpose: a too-long name is cut, never overrun. */
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
