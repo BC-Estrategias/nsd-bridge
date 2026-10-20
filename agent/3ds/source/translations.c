@@ -168,39 +168,48 @@ static const char PROPFIND_BODY[] =
     "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>";
 
 /* One request on the share. True when curl succeeded and the server answered below 400. The connection is kept between calls. */
-static bool http(const char *method, const char *path, const char *depth, const char *body, curl_write_callback sink, void *ud) {
-  static char url[1000], enc[700], userpwd[100], dh[24];
-  struct curl_slist *hdr = NULL;
-  struct curl_blob ca;
-  CURLM *mh;
-  CURLcode code = CURLE_FAILED_INIT;
-  int running = 1;
-  long http_code = 0;
+/* The options every request on the share uses; the string arguments are copied by curl, so the buffers can be reused. */
+static void apply_opts(CURL *c, const char *method, const char *path) {
+  static char url[1000], enc[700], userpwd[100];
+  static struct curl_blob ca;
   url_encode_path(path, enc, sizeof enc);
   snprintf(url, sizeof url, "%s/public.php/webdav/%s", g_base, enc);
   snprintf(userpwd, sizeof userpwd, "%s:", g_token);
   ca.data = (void *)nsd_ca_pem;
   ca.len = (size_t)(nsd_ca_pem_end - nsd_ca_pem);
   ca.flags = CURL_BLOB_NOCOPY;
+  curl_easy_setopt(c, CURLOPT_URL, url);
+  curl_easy_setopt(c, CURLOPT_USERAGENT, "NSD-Bridge/" NDP_AGENT_VERSION);
+  curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "https");
+  curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L); /* the credentials never leave the share's server */
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
+  curl_easy_setopt(c, CURLOPT_CAINFO_BLOB, &ca);
+  curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 30L);
+  curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 128L);
+  curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
+  curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
+  curl_easy_setopt(c, CURLOPT_USERPWD, userpwd);
+  curl_easy_setopt(c, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
+  if (method) curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, method);
+}
+
+/* One request on the share. True when curl succeeded and the server answered below 400. All requests go through the one
+ * multi handle of the job (g_mh), so the HTTPS connection stays open between them: a new handshake per file is what made the
+ * first version take seconds for each tiny file. */
+static CURLM *g_mh;
+static bool http(const char *method, const char *path, const char *depth, const char *body, curl_write_callback sink, void *ud) {
+  static char dh[24];
+  struct curl_slist *hdr = NULL;
+  CURLcode code = CURLE_FAILED_INIT;
+  int running = 1;
+  long http_code = 0;
   curl_easy_reset(g_c);
-  curl_easy_setopt(g_c, CURLOPT_URL, url);
-  curl_easy_setopt(g_c, CURLOPT_USERAGENT, "NSD-Bridge/" NDP_AGENT_VERSION);
-  curl_easy_setopt(g_c, CURLOPT_PROTOCOLS_STR, "https");
-  curl_easy_setopt(g_c, CURLOPT_FOLLOWLOCATION, 0L); /* the credentials never leave the share's server */
-  curl_easy_setopt(g_c, CURLOPT_SSL_VERIFYPEER, 1L);
-  curl_easy_setopt(g_c, CURLOPT_SSL_VERIFYHOST, 2L);
-  curl_easy_setopt(g_c, CURLOPT_CAINFO_BLOB, &ca);
-  curl_easy_setopt(g_c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-  curl_easy_setopt(g_c, CURLOPT_CONNECTTIMEOUT, 30L);
-  curl_easy_setopt(g_c, CURLOPT_LOW_SPEED_LIMIT, 128L);
-  curl_easy_setopt(g_c, CURLOPT_LOW_SPEED_TIME, 30L);
-  curl_easy_setopt(g_c, CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(g_c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
-  curl_easy_setopt(g_c, CURLOPT_USERPWD, userpwd);
-  curl_easy_setopt(g_c, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
+  apply_opts(g_c, method, path);
   curl_easy_setopt(g_c, CURLOPT_WRITEFUNCTION, sink);
   curl_easy_setopt(g_c, CURLOPT_WRITEDATA, ud);
-  if (method) curl_easy_setopt(g_c, CURLOPT_CUSTOMREQUEST, method);
   if (depth) { snprintf(dh, sizeof dh, "Depth: %s", depth); hdr = curl_slist_append(hdr, dh); }
   if (body) {
     hdr = curl_slist_append(hdr, "Content-Type: application/xml");
@@ -208,24 +217,21 @@ static bool http(const char *method, const char *path, const char *depth, const 
     curl_easy_setopt(g_c, CURLOPT_POSTFIELDSIZE, (long)strlen(body));
   }
   if (hdr) curl_easy_setopt(g_c, CURLOPT_HTTPHEADER, hdr);
-  mh = curl_multi_init();
-  if (!mh) { curl_slist_free_all(hdr); return false; }
-  curl_multi_add_handle(mh, g_c);
+  curl_multi_add_handle(g_mh, g_c);
   /* short waits: the console's socket service handles one request at a time, and the bridge shares it */
   while (running) {
-    if (curl_multi_perform(mh, &running) != CURLM_OK) break;
-    if (running) curl_multi_poll(mh, NULL, 0, 50, NULL);
+    if (curl_multi_perform(g_mh, &running) != CURLM_OK) break;
+    if (running) curl_multi_poll(g_mh, NULL, 0, 50, NULL);
     if (cancelled()) { code = CURLE_ABORTED_BY_CALLBACK; running = -1; break; }
   }
   if (running != -1) {
     CURLMsg *msg;
     int left;
     code = CURLE_RECV_ERROR;
-    while ((msg = curl_multi_info_read(mh, &left)) != NULL) if (msg->msg == CURLMSG_DONE) code = msg->data.result;
+    while ((msg = curl_multi_info_read(g_mh, &left)) != NULL) if (msg->msg == CURLMSG_DONE) code = msg->data.result;
   }
   curl_easy_getinfo(g_c, CURLINFO_RESPONSE_CODE, &http_code);
-  curl_multi_remove_handle(mh, g_c);
-  curl_multi_cleanup(mh);
+  curl_multi_remove_handle(g_mh, g_c);
   curl_slist_free_all(hdr);
   g_net_code = (int)code;
   g_http_code = http_code;
@@ -637,7 +643,6 @@ static void job_prepare(void) {
 }
 
 /* ------------------------------------------------------------------------------------------------ install */
-typedef struct { FILE *f; uint64_t got; } fsink;
 static uint64_t g_bytes_base, g_last_ms, g_last_bytes;
 static double g_ema;
 
@@ -657,16 +662,6 @@ static void progress_bytes(uint64_t done) {
     touch();
   }
   LightLock_Unlock(&g_lock);
-}
-
-static size_t sink_file(char *ptr, size_t a, size_t b, void *ud) {
-  fsink *x = ud;
-  size_t n = a * b;
-  if (cancelled()) return 0;
-  if (fwrite(ptr, 1, n, x->f) != n) return 0;
-  x->got += n;
-  progress_bytes(g_bytes_base + x->got);
-  return n;
 }
 
 static void mkdir_p(const char *base, const char *rel_dir) {
@@ -747,10 +742,20 @@ static void remove_stale(const char *base) {
   free(sorted);
 }
 
+#define PAR 6
+typedef struct { CURL *c; FILE *f; unsigned idx; uint64_t got; bool active; char tmp[340], dst[330]; } slot;
+static size_t sink_slot(char *ptr, size_t a, size_t b, void *ud) {
+  slot *x = ud;
+  size_t n = a * b;
+  if (cancelled()) return 0;
+  if (fwrite(ptr, 1, n, x->f) != n) return 0;
+  x->got += n;
+  return n;
+}
+
 static void job_install(void) {
   tr_pack pk;
-  static char base[96], src[480], dst[330], tmp[340], dirrel[220];
-  unsigned i;
+  static char base[96], src[480], dirrel[220];
   bool sleep_ok = aptIsSleepAllowed();
   if (g_prep_pack < 0 || g_prep_pack >= g_np) { fail(TRE_NOFILES, ""); return; }
   pk = g_packs[g_prep_pack];
@@ -769,28 +774,84 @@ static void job_install(void) {
   alog("Translations: installing %s v %s (%u files)", pk.ref.id, pk.ref.version, g_nf);
   mkdir_p(base, "");
   g_bytes_base = 0;
-  for (i = 0; i < g_nf && !cancelled(); i++) {
-    const char *rel = file_at(i);
-    const char *slash = strrchr(rel, '/');
-    fsink fs;
-    bool ok;
-    if (!tr_path_ok(rel)) { fail(TRE_BADPATH, rel); goto out; }
-    if (slash) { snprintf(dirrel, sizeof dirrel, "%.*s", (int)(slash - rel), rel); mkdir_p(base, dirrel); }
-    snprintf(dst, sizeof dst, "%s/%s", base, rel);
-    snprintf(tmp, sizeof tmp, "%s.nsdtmp", dst);
-    snprintf(src, sizeof src, "%s/arquivos/%s", pk.path, rel);
-    fs.f = fopen(tmp, "wb");
-    fs.got = 0;
-    if (!fs.f) { fail(TRE_IO, rel); goto out; }
-    ok = http("GET", src, NULL, NULL, sink_file, &fs);
-    fclose(fs.f);
-    if (!ok) { remove(tmp); net_fail(rel); goto out; }
-    if (g_files[i].size && fs.got != g_files[i].size) { remove(tmp); fail(TRE_SIZE, rel); goto out; }
-    remove(dst);
-    if (rename(tmp, dst) != 0) { remove(tmp); fail(TRE_IO, rel); goto out; }
-    g_bytes_base += fs.got;
+  {
+    /* PAR files at once: the share takes a second or more to answer each request, so one at a time was mostly waiting */
+    static slot sl[PAR];
+    unsigned next = 0, done = 0;
+    int active = 0, running = 0, k;
+    bool bad = false;
+    memset(sl, 0, sizeof sl);
+    for (k = 0; k < PAR; k++) { sl[k].c = curl_easy_init(); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
+    while ((next < g_nf || active > 0) && !cancelled() && !bad) {
+      CURLMsg *msg;
+      int left;
+      uint64_t live = 0;
+      for (k = 0; k < PAR && next < g_nf; k++) {
+        slot *s2 = &sl[k];
+        const char *rel, *slash;
+        if (s2->active) continue;
+        rel = file_at(next);
+        slash = strrchr(rel, '/');
+        if (!tr_path_ok(rel)) { fail(TRE_BADPATH, rel); bad = true; break; }
+        if (slash) { snprintf(dirrel, sizeof dirrel, "%.*s", (int)(slash - rel), rel); mkdir_p(base, dirrel); }
+        snprintf(s2->dst, sizeof s2->dst, "%s/%s", base, rel);
+        snprintf(s2->tmp, sizeof s2->tmp, "%s.nsdtmp", s2->dst);
+        snprintf(src, sizeof src, "%s/arquivos/%s", pk.path, rel);
+        s2->f = fopen(s2->tmp, "wb");
+        if (!s2->f) { fail(TRE_IO, rel); bad = true; break; }
+        s2->got = 0;
+        s2->idx = next++;
+        curl_easy_reset(s2->c);
+        apply_opts(s2->c, "GET", src);
+        curl_easy_setopt(s2->c, CURLOPT_WRITEFUNCTION, sink_slot);
+        curl_easy_setopt(s2->c, CURLOPT_WRITEDATA, s2);
+        curl_multi_add_handle(g_mh, s2->c);
+        s2->active = true;
+        active++;
+      }
+      if (bad) break;
+      if (curl_multi_perform(g_mh, &running) != CURLM_OK) { g_net_code = CURLE_RECV_ERROR; g_http_code = 0; net_fail("transfer"); bad = true; break; }
+      if (running) curl_multi_poll(g_mh, NULL, 0, 50, NULL);
+      while ((msg = curl_multi_info_read(g_mh, &left)) != NULL) {
+        slot *d = NULL;
+        long http_code = 0;
+        if (msg->msg != CURLMSG_DONE) continue;
+        for (k = 0; k < PAR; k++) if (sl[k].active && sl[k].c == msg->easy_handle) d = &sl[k];
+        if (!d) continue;
+        curl_easy_getinfo(d->c, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_multi_remove_handle(g_mh, d->c);
+        fclose(d->f);
+        d->f = NULL;
+        d->active = false;
+        active--;
+        if (msg->data.result != CURLE_OK || http_code < 200 || http_code >= 400) {
+          g_net_code = (int)msg->data.result;
+          g_http_code = http_code;
+          remove(d->tmp);
+          net_fail(file_at(d->idx));
+          bad = true;
+          break;
+        }
+        if (g_files[d->idx].size && d->got != g_files[d->idx].size) { remove(d->tmp); fail(TRE_SIZE, file_at(d->idx)); bad = true; break; }
+        remove(d->dst);
+        if (rename(d->tmp, d->dst) != 0) { remove(d->tmp); fail(TRE_IO, file_at(d->idx)); bad = true; break; }
+        g_bytes_base += d->got;
+        done++;
+      }
+      for (k = 0; k < PAR; k++) if (sl[k].active) live += sl[k].got;
+      LightLock_Lock(&g_lock);
+      g_st.files_done = done;
+      LightLock_Unlock(&g_lock);
+      progress_bytes(g_bytes_base + live);
+    }
+    /* stop whatever is still in flight (an error, or the user cancelled) */
+    for (k = 0; k < PAR; k++) {
+      if (sl[k].active) { curl_multi_remove_handle(g_mh, sl[k].c); if (sl[k].f) fclose(sl[k].f); remove(sl[k].tmp); sl[k].active = false; }
+      if (sl[k].c) curl_easy_cleanup(sl[k].c);
+    }
+    if (bad) goto out;
     LightLock_Lock(&g_lock);
-    g_st.files_done = i + 1;
+    g_st.files_done = done;
     g_st.bytes_done = g_bytes_base;
     touch();
     LightLock_Unlock(&g_lock);
@@ -869,8 +930,9 @@ static void run(void *arg) {
   (void)arg;
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) { fail(TRE_NET, "curl"); goto done; }
   g_c = curl_easy_init();
+  g_mh = curl_multi_init();
   g_es = malloc(ES_MAX * sizeof *g_es);
-  if (!g_c || !g_es) { fail(TRE_IO, "memory"); goto cleanup; }
+  if (!g_c || !g_mh || !g_es) { fail(TRE_IO, "memory"); goto cleanup; }
   if (g_job == J_LIST) job_list();
   else if (g_job == J_PREPARE) job_prepare();
   else if (g_prep_uninstall) job_uninstall();
@@ -878,6 +940,8 @@ static void run(void *arg) {
 cleanup:
   if (g_c) curl_easy_cleanup(g_c);
   g_c = NULL;
+  if (g_mh) curl_multi_cleanup(g_mh);
+  g_mh = NULL;
   free(g_es);
   g_es = NULL;
   curl_global_cleanup();
