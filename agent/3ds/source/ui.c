@@ -15,7 +15,7 @@ static C3D_RenderTarget *g_top, *g_bot;
 static C2D_TextBuf g_tb;
 static bool g_ready, g_pt;
 
-enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_TITLES, SCR_TRANSL, SCR_COUNT };
+enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_TITLES, SCR_TRANSL, SCR_SETTINGS, SCR_COUNT };
 static int g_screen = SCR_MAIN, g_log_off = 0;
 static int g_sel[SCR_COUNT] = {1, 0, 0, 0, 0, 0, 0, 0}; /* the main menu starts on the row after Updates: a stray A never starts an install */
 static int g_arg;
@@ -118,7 +118,9 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 }
 
 /* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
-enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIRING, IT_INSTALLER, IT_TITLES, IT_TRANSL, IT_LOG, IT_EXIT, IT_COUNT };
+/* the main menu: START leaves the app, so there is no "Exit" row; the rarely used rows live under Settings */
+enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_INSTALLER, IT_COUNT };
+enum { SS_FOLDERS, SS_MODE, SS_PAIRING, SS_LOG, SS_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
 enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SEEDS, SI_COUNT };
 
@@ -127,14 +129,19 @@ int ui_arg(void) { return g_arg; }
 static const char *item_name(int i) {
   switch (i) {
     case IT_UPDATE: return UI_T("Updates", "Atualizações");
-    case IT_FOLDERS: return UI_T("Open folders", "Pastas liberadas");
-    case IT_MODE: return UI_T("Mode", "Modo");
-    case IT_PAIRING: return UI_T("Pairing", "Pareamento");
-    case IT_INSTALLER: return UI_T("Installer", "Instalador");
+    case IT_SETTINGS: return UI_T("Settings", "Configurações");
     case IT_TITLES: return UI_T("Titles", "Títulos");
     case IT_TRANSL: return UI_T("Translations", "Traduções");
-    case IT_LOG: return UI_T("Activity log", "Log de atividade");
-    default: return UI_T("Exit", "Sair");
+    default: return UI_T("Installer", "Instalador");
+  }
+}
+
+static const char *settings_name(int i) {
+  switch (i) {
+    case SS_FOLDERS: return UI_T("Open folders", "Pastas liberadas");
+    case SS_MODE: return UI_T("Mode", "Modo");
+    case SS_PAIRING: return UI_T("Pairing", "Pareamento");
+    default: return UI_T("Activity log", "Log de atividade");
   }
 }
 
@@ -148,6 +155,7 @@ static int log_count(void) {
 static int rows_here(const ui_model *m) {
   switch (g_screen) {
     case SCR_MAIN: return IT_COUNT;
+    case SCR_SETTINGS: return SS_COUNT;
     case SCR_MCP: return SP_COUNT;
     case SCR_INST: return m->seeds_dir ? SI_COUNT : SI_COUNT - 1;
     case SCR_DEVICES: return m->paired_n + (m->paired_n > 0 ? 1 : 0); /* + "forget all" */
@@ -163,14 +171,20 @@ static ui_action activate(const ui_model *m) {
   if (g_screen == SCR_MAIN) {
     switch (sel) {
       case IT_UPDATE: return UI_UPDATE;
-      case IT_FOLDERS: return UI_FOLDERS;
-      case IT_MODE: return UI_MODE;
-      case IT_PAIRING: go(SCR_MCP); return UI_NONE;
+      case IT_SETTINGS: g_sel[SCR_SETTINGS] = 0; go(SCR_SETTINGS); return UI_NONE;
       case IT_INSTALLER: go(SCR_INST); return UI_NONE;
       case IT_TITLES: uit_open(); go(SCR_TITLES); return UI_NONE;
       case IT_TRANSL: uitr_open(); go(SCR_TRANSL); return UI_NONE;
-      case IT_LOG: g_log_off = 0; go(SCR_LOG); return UI_NONE;
-      default: return UI_EXIT;
+      default: break;
+    }
+    return UI_NONE;
+  }
+  if (g_screen == SCR_SETTINGS) {
+    switch (sel) {
+      case SS_FOLDERS: return UI_FOLDERS;
+      case SS_MODE: return UI_MODE;
+      case SS_PAIRING: go(SCR_MCP); return UI_NONE;
+      default: g_log_off = 0; go(SCR_LOG); return UI_NONE;
     }
   }
   if (g_screen == SCR_MCP) {
@@ -279,6 +293,7 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
   if ((down & KEY_B) || (g_screen != SCR_MAIN && (down & KEY_START)) ||
       ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40 && g_screen != SCR_MAIN)) {
     if (g_screen == SCR_DEVICES) go(SCR_MCP);
+    else if (g_screen == SCR_MCP || g_screen == SCR_LOG) go(SCR_SETTINGS);
     else if (g_screen != SCR_MAIN) go(SCR_MAIN); /* (SCR_INST -> main; SD/RECV/QR have their own handling above) */
     else return UI_NONE;
     *redraw = true;
@@ -388,12 +403,28 @@ static void draw_main(const ui_model *m) {
           default: snprintf(val, sizeof val, "%s", UI_T("tap to check", "verificar")); break;
         }
         break;
-      case IT_FOLDERS: if (m->whole_sd) { snprintf(val, sizeof val, "%s", UI_T("WHOLE SD", "SD INTEIRO")); ink = COL_INK_RED; } else snprintf(val, sizeof val, "%d", m->open_folders); break;
-      case IT_MODE: snprintf(val, sizeof val, "%s", m->read_only ? UI_T("Read-only", "Leitura") : UI_T("Development", "Desenvolvimento")); break;
-      case IT_PAIRING: snprintf(val, sizeof val, "%d", m->paired_n); break;
+      case IT_SETTINGS: if (m->whole_sd) { snprintf(val, sizeof val, "%s", UI_T("WHOLE SD", "SD INTEIRO")); ink = COL_INK_RED; } else snprintf(val, sizeof val, "%s", m->read_only ? UI_T("Read-only", "Leitura") : UI_T("Development", "Desenvolvimento")); break;
       default: break;
     }
     ui_list_row(i, g_sel[SCR_MAIN], main_top, item_name(i), val, ink);
+  }
+}
+
+static void draw_settings(const ui_model *m) {
+  int i;
+  char val[48];
+  ui_scene_bottom(COL_BOT_BG);
+  ui_bottom_chrome(UI_T("Settings", "Configurações"), UI_T("< Main menu  (B: back)", "< Menu principal  (B: voltar)"), UI_T("A: Select   B: Back", "A: Selecionar   B: Voltar"));
+  for (i = 0; i < SS_COUNT; i++) {
+    uint32_t ink = COL_INK;
+    val[0] = '\0';
+    switch (i) {
+      case SS_FOLDERS: if (m->whole_sd) { snprintf(val, sizeof val, "%s", UI_T("WHOLE SD", "SD INTEIRO")); ink = COL_INK_RED; } else snprintf(val, sizeof val, "%d", m->open_folders); break;
+      case SS_MODE: snprintf(val, sizeof val, "%s", m->read_only ? UI_T("Read-only", "Leitura") : UI_T("Development", "Desenvolvimento")); break;
+      case SS_PAIRING: snprintf(val, sizeof val, "%d", m->paired_n); break;
+      default: break;
+    }
+    ui_list_row(i, g_sel[SCR_SETTINGS], 0, settings_name(i), val, ink);
   }
 }
 
@@ -504,6 +535,7 @@ void ui_draw(const ui_model *m) {
   draw_top(m);
   switch (g_screen) {
     case SCR_INST: draw_installer(m); break;
+    case SCR_SETTINGS: draw_settings(m); break;
     case SCR_SD: uii_sd_draw(); break;
     case SCR_RECV: uii_recv_draw(m); break;
     case SCR_MCP: draw_mcp(m); break;
