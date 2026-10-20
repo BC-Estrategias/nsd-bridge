@@ -743,6 +743,9 @@ static void remove_stale(const char *base) {
 }
 
 #define PAR 6
+static uint64_t g_inst_start;
+static long g_connects;                 /* diagnostics: new HTTPS connections opened by an install, and the time spent waiting */
+static double g_sum_tls, g_sum_first;
 typedef struct { CURL *c; FILE *f; unsigned idx; uint64_t got; bool active; char tmp[340], dst[330]; } slot;
 static size_t sink_slot(char *ptr, size_t a, size_t b, void *ud) {
   slot *x = ud;
@@ -771,6 +774,7 @@ static void job_install(void) {
   touch();
   LightLock_Unlock(&g_lock);
   set_state(TRS_WORKING);
+  g_inst_start = now_ms();
   alog("Translations: installing %s v %s (%u files)", pk.ref.id, pk.ref.version, g_nf);
   mkdir_p(base, "");
   g_bytes_base = 0;
@@ -781,6 +785,8 @@ static void job_install(void) {
     int active = 0, running = 0, k;
     bool bad = false;
     memset(sl, 0, sizeof sl);
+    g_connects = 0;
+    g_sum_tls = g_sum_first = 0;
     for (k = 0; k < PAR; k++) { sl[k].c = curl_easy_init(); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
     while ((next < g_nf || active > 0) && !cancelled() && !bad) {
       CURLMsg *msg;
@@ -819,6 +825,16 @@ static void job_install(void) {
         for (k = 0; k < PAR; k++) if (sl[k].active && sl[k].c == msg->easy_handle) d = &sl[k];
         if (!d) continue;
         curl_easy_getinfo(d->c, CURLINFO_RESPONSE_CODE, &http_code);
+        {
+          long nc = 0;
+          double tls = 0, first = 0;
+          curl_easy_getinfo(d->c, CURLINFO_NUM_CONNECTS, &nc);
+          curl_easy_getinfo(d->c, CURLINFO_APPCONNECT_TIME, &tls);
+          curl_easy_getinfo(d->c, CURLINFO_STARTTRANSFER_TIME, &first);
+          g_connects += nc;
+          g_sum_tls += tls;
+          g_sum_first += first;
+        }
         curl_multi_remove_handle(g_mh, d->c);
         fclose(d->f);
         d->f = NULL;
@@ -857,6 +873,8 @@ static void job_install(void) {
     LightLock_Unlock(&g_lock);
   }
   if (cancelled()) { fail(TRE_CANCELLED, ""); goto out; }
+  alog("Translations: %u files, %llu KiB in %lu s; %ld new connections, waits: TLS %.0f s, first byte %.0f s (sums over files)", g_nf,
+       (unsigned long long)(g_bytes_base >> 10), (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects, g_sum_tls, g_sum_first);
   remove_stale(base);
   if (!write_record(&pk, base)) { fail(TRE_IO, ".nsd-pack.json"); goto out; }
   alog("Translations: %s installed", pk.ref.id);
