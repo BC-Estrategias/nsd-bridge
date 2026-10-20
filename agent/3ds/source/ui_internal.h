@@ -34,4 +34,10 @@ bool uii_flow_active(const ui_model *m);
 ui_action uii_flow_handle(u32 down, const touchPosition *touch, const ui_model *m, bool *redraw);
 void uii_flow_draw(const ui_model *m);
 
+/* ---- titles screens (ui_titles.c) ---- */
+void uit_open(void);
+void uit_shutdown(void);
+void uit_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bool *leave);
+void uit_draw(const ui_model *m);   /* draws both screens */
+
 #endif

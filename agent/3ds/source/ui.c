@@ -15,7 +15,7 @@ static C3D_RenderTarget *g_top, *g_bot;
 static C2D_TextBuf g_tb;
 static bool g_ready, g_pt;
 
-enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_COUNT };
+enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_TITLES, SCR_COUNT };
 static int g_screen = SCR_MAIN, g_log_off = 0;
 static int g_sel[SCR_COUNT] = {1, 0, 0, 0, 0, 0, 0, 0}; /* the main menu starts on the row after Updates: a stray A never starts an install */
 static int g_arg;
@@ -42,6 +42,7 @@ void ui_init(void) {
 
 void ui_exit(void) {
   if (!g_ready) return;
+  uit_shutdown();
   C2D_TextBufDelete(g_tb);
   C2D_Fini();
   C3D_Fini();
@@ -117,9 +118,9 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 }
 
 /* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
-enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIRING, IT_INSTALLER, IT_LOG, IT_EXIT, IT_COUNT };
+enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIRING, IT_INSTALLER, IT_TITLES, IT_LOG, IT_EXIT, IT_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
-enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_SEEDS, SI_PENDING, SI_COUNT };
+enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SEEDS, SI_COUNT };
 
 int ui_arg(void) { return g_arg; }
 
@@ -130,6 +131,7 @@ static const char *item_name(int i) {
     case IT_MODE: return UI_T("Mode", "Modo");
     case IT_PAIRING: return UI_T("Pairing", "Pareamento");
     case IT_INSTALLER: return UI_T("Installer", "Instalador");
+    case IT_TITLES: return UI_T("Titles", "Títulos");
     case IT_LOG: return UI_T("Activity log", "Log de atividade");
     default: return UI_T("Exit", "Sair");
   }
@@ -146,7 +148,7 @@ static int rows_here(const ui_model *m) {
   switch (g_screen) {
     case SCR_MAIN: return IT_COUNT;
     case SCR_MCP: return SP_COUNT;
-    case SCR_INST: return SI_COUNT;
+    case SCR_INST: return m->seeds_dir ? SI_COUNT : SI_COUNT - 1;
     case SCR_DEVICES: return m->paired_n + (m->paired_n > 0 ? 1 : 0); /* + "forget all" */
     default: return 0;
   }
@@ -164,6 +166,7 @@ static ui_action activate(const ui_model *m) {
       case IT_MODE: return UI_MODE;
       case IT_PAIRING: go(SCR_MCP); return UI_NONE;
       case IT_INSTALLER: go(SCR_INST); return UI_NONE;
+      case IT_TITLES: uit_open(); go(SCR_TITLES); return UI_NONE;
       case IT_LOG: g_log_off = 0; go(SCR_LOG); return UI_NONE;
       default: return UI_EXIT;
     }
@@ -204,6 +207,12 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
     return UI_NONE;
   }
   if (uii_flow_active(m)) return uii_flow_handle(down, touch, m, redraw);
+  if (g_screen == SCR_TITLES) {
+    bool leave = false;
+    uit_handle(down, held, touch, redraw, &leave);
+    if (leave) { go(SCR_MAIN); *redraw = true; }
+    return UI_NONE;
+  }
   if (g_screen == SCR_SD) {
     bool leave = false;
     ui_action a = uii_sd_handle(down, held, touch, redraw, &leave);
@@ -414,8 +423,8 @@ static void draw_installer(const ui_model *m) {
   ui_list_row(SI_URL, g_sel[SCR_INST], 0, UI_T("Type a URL", "Digitar URL"), val, COL_INK);
   ui_list_row(SI_RECV, g_sel[SCR_INST], 0, UI_T("Receive from the browser", "Receber do navegador"), val, COL_INK);
   ui_list_row(SI_QR, g_sel[SCR_INST], 0, UI_T("Scan a QR code", "Escanear QR Code"), val, COL_INK);
-  ui_list_row(SI_SEEDS, g_sel[SCR_INST], 0, UI_T("Register seeds (/fbi/seed)", "Registrar seeds (/fbi/seed)"), m->seed_msg, COL_INK);
   ui_list_row(SI_PENDING, g_sel[SCR_INST], 0, UI_T("Clear partial downloads", "Limpar downloads parciais"), m->pending_msg, COL_INK);
+  if (m->seeds_dir) ui_list_row(SI_SEEDS, g_sel[SCR_INST], 0, UI_T("Register seeds (/fbi/seed)", "Registrar seeds (/fbi/seed)"), m->seed_msg, COL_INK);
   ui_text(160, 206, 0.36f, COL_DIM, UI_CENTER, "%s", UI_T("Seeds: the key some newer games need to open.", "Seeds: a chave que alguns jogos mais novos exigem para abrir."));
 }
 
@@ -461,6 +470,12 @@ void ui_draw(const ui_model *m) {
   ui_begin();
   if (uii_flow_active(m)) {
     uii_flow_draw(m);
+    if (m->pairing == 2) draw_pair_request(m);
+    ui_end();
+    return;
+  }
+  if (g_screen == SCR_TITLES) {
+    uit_draw(m);
     if (m->pairing == 2) draw_pair_request(m);
     ui_end();
     return;

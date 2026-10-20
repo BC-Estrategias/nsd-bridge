@@ -17,6 +17,7 @@
 #include "access_ui.h"
 #include "alog.h"
 #include "installer.h"
+#include "titles.h"
 #include "qr.h"
 #include "ui.h"
 #include "updater.h"
@@ -269,10 +270,13 @@ static aptHookCookie g_apt_cookie;
 static void apt_hook(APT_HookType hook, void *param);
 static void power_wake(void);
 static char g_seed_msg[64] = "", g_pending_msg[40] = "";
+static bool g_seeds_dir = false;
 static void refresh_pending(void) {
   unsigned n;
   uint64_t b;
+  struct stat sb;
   installer_pending(&n, &b);
+  g_seeds_dir = stat("sdmc:/fbi/seed", &sb) == 0 && S_ISDIR(sb.st_mode);
   if (n) snprintf(g_pending_msg, sizeof g_pending_msg, "%u (%u MiB)", n, (unsigned)(b >> 20));
   else g_pending_msg[0] = '\0';
 }
@@ -720,6 +724,7 @@ static void build_model(ui_model *m, uint64_t now) {
   m->adapter = g_adapter;
   snprintf(m->seed_msg, sizeof m->seed_msg, "%s", g_seed_msg);
   snprintf(m->pending_msg, sizeof m->pending_msg, "%s", g_pending_msg);
+  m->seeds_dir = g_seeds_dir;
   m->qr_on = qr_active();
   m->qr_inner = qr_active() ? qr_inner() : g_qr_inner;
   m->qr_bad = g_qr_bad;
@@ -888,6 +893,7 @@ int main(int argc, char **argv) {
 #ifndef AGENT_TEXT_UI
   updater_init(argc > 0 ? argv[0] : NULL);
   installer_init();
+  titles_init();
   refresh_pending();
 #else
   (void)argc;
@@ -1099,7 +1105,8 @@ int main(int argc, char **argv) {
         }
       }
       {
-        static unsigned last_ins_rev = 0;
+        static unsigned last_ins_rev = 0, last_titles_rev = 0;
+        if (titles_revision() != last_titles_rev) { last_titles_rev = titles_revision(); changed = true; draw_now = true; }
         ins_status is;
         installer_get(&is);
         /* while installing, progress redraws follow the normal throttle: every redraw takes CPU from the download */
@@ -1149,6 +1156,7 @@ quit:
   power_wake();
   qr_stop();
   aptUnhook(&g_apt_cookie);
+  titles_shutdown();
   installer_shutdown();
   updater_shutdown();
 #endif

@@ -71,6 +71,7 @@ typedef struct {
   int battery;           /* percent, -1 when unknown */
   bool qr_on, qr_inner, qr_bad;   /* scanner: camera running, which one, the last code was not an http(s) address */
   char qr_err[64];
+  bool seeds_dir;        /* /fbi/seed exists: only then the "register seeds" row is shown */
   char pending_msg[40];  /* partial downloads on the card, e.g. "2 (310 MiB)" */
   char seed_msg[64];     /* result of the last "register seeds" */
   char recv_addr[48];    /* what the page/ndev should reach: "192.168.1.5:8080" */

@@ -43,6 +43,8 @@ if [ "${1:-}" = "--3ds" ]; then
   fi
   # which pieces of a download are on the card (pure C)
   cc -Wall -Wextra -I agent/3ds/source agent/3ds/tests/dlmap_test.c agent/3ds/source/dlmap.c -o build/dlmap_test && ./build/dlmap_test
+  # UTF-16 to UTF-8 for the title names (pure C)
+  cc -Wall -Wextra -I agent/3ds/source agent/3ds/tests/utf16_test.c agent/3ds/source/utf16.c -o build/utf16_test && ./build/utf16_test
   # the CIA header parser (pure C)
   cc -Wall -I agent/3ds/source agent/3ds/tests/cia_info_test.c agent/3ds/source/cia_info.c -o build/cia_info_test && ./build/cia_info_test
   # the update-manifest logic is pure C; it needs a host Jansson (e.g. brew/apt libjansson-dev) to run
