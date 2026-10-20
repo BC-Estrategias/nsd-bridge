@@ -742,7 +742,9 @@ static void remove_stale(const char *base) {
   free(sorted);
 }
 
-#define PAR 6
+#define PAR 12
+static int g_par = 6;                    /* files at once (dbg-par in the agent folder can change it while this is being measured) */
+static uint64_t g_conc_ms_x;             /* diagnostics: sum of (active transfers x ms) */
 static uint64_t g_inst_start;
 static uint64_t g_ms_sd, g_ms_net, g_ms_open, g_ms_close, g_ms_ren;     /* diagnostics: time in file operations / in the network calls */
 static long g_connects;                 /* diagnostics: new HTTPS connections opened by an install, and the time spent waiting */
@@ -785,18 +787,24 @@ static void job_install(void) {
     unsigned next = 0, done = 0;
     int active = 0, running = 0, k;
     bool bad = false;
-    uint64_t t_a, t_b;
+    uint64_t t_a, t_b, t_last = now_ms();
+    {
+      char pv[8];
+      if (slurp("sdmc:/3ds/nintendo-dev-agent/dbg-par", pv, sizeof pv, NULL) && atoi(pv) >= 1 && atoi(pv) <= PAR) g_par = atoi(pv);
+      else g_par = 6;
+    }
+    g_conc_ms_x = 0;
     memset(sl, 0, sizeof sl);
     g_connects = 0;
     g_sum_tls = g_sum_first = 0;
     g_ms_sd = g_ms_net = g_ms_open = g_ms_close = g_ms_ren = 0;
-    for (k = 0; k < PAR; k++) { sl[k].c = curl_easy_init(); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
+    for (k = 0; k < g_par; k++) { sl[k].c = curl_easy_init(); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
     while ((next < g_nf || active > 0) && !cancelled() && !bad) {
       CURLMsg *msg;
       int left;
       uint64_t live = 0;
       t_a = now_ms();
-      for (k = 0; k < PAR && next < g_nf; k++) {
+      for (k = 0; k < g_par && next < g_nf; k++) {
         slot *s2 = &sl[k];
         const char *rel, *slash;
         if (s2->active) continue;
@@ -827,12 +835,14 @@ static void job_install(void) {
       if (curl_multi_perform(g_mh, &running) != CURLM_OK) { g_net_code = CURLE_RECV_ERROR; g_http_code = 0; net_fail("transfer"); bad = true; break; }
       if (running) curl_multi_poll(g_mh, NULL, 0, 50, NULL);
       g_ms_net += now_ms() - t_a;
+      g_conc_ms_x += (uint64_t)active * (now_ms() - t_last);
+      t_last = now_ms();
       t_a = now_ms();
       while ((msg = curl_multi_info_read(g_mh, &left)) != NULL) {
         slot *d = NULL;
         long http_code = 0;
         if (msg->msg != CURLMSG_DONE) continue;
-        for (k = 0; k < PAR; k++) if (sl[k].active && sl[k].c == msg->easy_handle) d = &sl[k];
+        for (k = 0; k < g_par; k++) if (sl[k].active && sl[k].c == msg->easy_handle) d = &sl[k];
         if (!d) continue;
         curl_easy_getinfo(d->c, CURLINFO_RESPONSE_CODE, &http_code);
         {
@@ -869,14 +879,14 @@ static void job_install(void) {
         done++;
       }
       g_ms_sd += now_ms() - t_a;
-      for (k = 0; k < PAR; k++) if (sl[k].active) live += sl[k].got;
+      for (k = 0; k < g_par; k++) if (sl[k].active) live += sl[k].got;
       LightLock_Lock(&g_lock);
       g_st.files_done = done;
       LightLock_Unlock(&g_lock);
       progress_bytes(g_bytes_base + live);
     }
     /* stop whatever is still in flight (an error, or the user cancelled) */
-    for (k = 0; k < PAR; k++) {
+    for (k = 0; k < g_par; k++) {
       if (sl[k].active) { curl_multi_remove_handle(g_mh, sl[k].c); if (sl[k].f) fclose(sl[k].f); remove(sl[k].tmp); sl[k].active = false; }
       if (sl[k].c) curl_easy_cleanup(sl[k].c);
     }
@@ -890,7 +900,8 @@ static void job_install(void) {
   if (cancelled()) { fail(TRE_CANCELLED, ""); goto out; }
   alog("Translations: %u files, %llu KiB in %lu s, %ld new connections", g_nf, (unsigned long long)(g_bytes_base >> 10),
        (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects);
-  alog("Waits summed: TLS %.0f s, first byte %.0f s", g_sum_tls, g_sum_first);
+  alog("Waits summed: TLS %.0f s, first byte %.0f s; slots %d, average in flight %.1f", g_sum_tls, g_sum_first, g_par,
+       (now_ms() - g_inst_start) ? (double)g_conc_ms_x / (double)(now_ms() - g_inst_start) : 0.0);
   alog("Loop: network %lu s, card %lu s (create %lu, close %lu, rename %lu)", (unsigned long)(g_ms_net / 1000), (unsigned long)(g_ms_sd / 1000),
        (unsigned long)(g_ms_open / 1000), (unsigned long)(g_ms_close / 1000), (unsigned long)(g_ms_ren / 1000));
   remove_stale(base);
