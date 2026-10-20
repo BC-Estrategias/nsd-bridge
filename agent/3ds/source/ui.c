@@ -21,6 +21,7 @@ static int g_sel[SCR_COUNT] = {1, 0, 0, 0, 0, 0, 0, 0}; /* the main menu starts 
 static int g_arg;
 static char g_arg_str[520];
 const char *ui_arg_str(void) { return g_arg_str; }
+void ui_show_installer_menu(void) { g_screen = SCR_INST; }
 void ui_set_arg_str(const char *s) { snprintf(g_arg_str, sizeof g_arg_str, "%s", s); }
 static int cur_screen(void) { return (unsigned)g_screen < SCR_COUNT ? g_screen : SCR_MAIN; }
 

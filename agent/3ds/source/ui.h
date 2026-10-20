@@ -80,6 +80,8 @@ typedef struct {
 
 void ui_init(void);
 void ui_exit(void);
+/* Back to the Installer menu (the scanner leaves its screen once a code was read). */
+void ui_show_installer_menu(void);
 const char *ui_arg_str(void);  /* the text that goes with UI_INST_SD */
 void ui_set_arg_str(const char *s);
 int ui_arg(void);  /* the index that goes with the last UI_UNPAIR_ONE */

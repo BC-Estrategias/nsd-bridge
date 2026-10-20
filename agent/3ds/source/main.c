@@ -262,8 +262,23 @@ static int device_info(void *ctx, ndp_device_info *di) {
 static bool g_is_new3ds = false, g_charging = false, g_adapter = false, g_mcu_ok = false, g_ptm_ok = false;
 static int g_battery = -1;
 #ifndef AGENT_TEXT_UI
+/* The camera must not stay on when the app is suspended (HOME, sleep): switched off there, back on when the app returns. */
+static bool g_qr_resume = false;
+static aptHookCookie g_apt_cookie;
+static void apt_hook(APT_HookType hook, void *param);
 static bool g_recv_open = false, g_qr_wanted = false, g_qr_restart = false, g_qr_bad = false, g_qr_inner = false;
+static void apt_hook(APT_HookType hook, void *param) {
+  (void)param;
+  if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) {
+    g_qr_resume = qr_active();
+    if (g_qr_resume) { qr_stop(); alog("QR scanner stopped (the app is being suspended)"); }
+  } else if (hook == APTHOOK_ONRESTORE || hook == APTHOOK_ONWAKEUP) {
+    if (g_qr_resume && g_qr_wanted) (void)qr_start(g_qr_inner);
+    g_qr_resume = false;
+  }
+}
 #endif
+
 static int install_url_cb(void *ctx, const char *url, const char *path, const uint8_t *sha256, char *detail, size_t cap) {
   (void)ctx;
 #ifndef AGENT_TEXT_UI
@@ -704,6 +719,9 @@ int main(int argc, char **argv) {
   ui_init();
 #endif
   alog_init();
+#ifndef AGENT_TEXT_UI
+  aptHook(&g_apt_cookie, apt_hook, NULL);
+#endif
   g_start_ms = now_ms(NULL);
 
   alog("NSD Bridge v%s, protocol %d", NDP_AGENT_VERSION, NDP_PROTOCOL_VERSION);
@@ -978,11 +996,14 @@ int main(int argc, char **argv) {
             g_qr_bad = false;
             alog("QR code read: %.80s", code);
             if (!installer_start_url(code, NULL)) alog("Install: busy, not started");
+            /* done with the camera: back to the Installer menu, it is not switched on again by itself (scan again from there) */
+            g_qr_wanted = false;
+            ui_show_installer_menu();
           } else {
             g_qr_bad = true;
             alog("QR code is not an http(s) address");
+            g_qr_restart = true; /* not an address: keep scanning */
           }
-          g_qr_restart = true; /* back to scanning once the install flow (if any) is over */
           changed = true;
           draw_now = true;
         } else if (qr_active()) {
@@ -1044,6 +1065,7 @@ quit:
   alog("Exiting");
 #ifndef AGENT_TEXT_UI
   qr_stop();
+  aptUnhook(&g_apt_cookie);
   installer_shutdown();
   updater_shutdown();
 #endif

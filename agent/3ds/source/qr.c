@@ -94,6 +94,7 @@ static void scan_thread(void *arg) {
             }
           }
           if (g_found) break;
+          svcSleepThread(40 * 1000000LL); /* a few decodes a second are plenty for a still QR code: leave the CPU to the rest of the app */
           res = CAMU_SetReceiving(&events[1], buf, PORT_CAM1, buf_size, (s16)transfer);
         } else { /* buffer error: restart the transfer */
           if (R_SUCCEEDED(res = CAMU_ClearBuffer(PORT_CAM1)) && R_SUCCEEDED(res = CAMU_SetReceiving(&events[1], buf, PORT_CAM1, buf_size, (s16)transfer)))
@@ -133,7 +134,13 @@ bool qr_start(bool inner) {
   g_inner = inner;
   if (R_FAILED(svcCreateEvent(&g_cancel_ev, RESET_STICKY))) { snprintf(g_err, sizeof g_err, "event"); return false; }
   g_running = true;
-  g_thread = threadCreate(scan_thread, NULL, 0x20000, 0x1A, 0, false);
+  {
+    /* LOWER priority than the main thread (which handles the HOME menu's suspend request) and the network: decoding frames
+     * is CPU-heavy and must never starve them. A larger number is a lower priority. */
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    g_thread = threadCreate(scan_thread, NULL, 0x20000, prio < 0x3E ? prio + 1 : prio, -1, false);
+  }
   if (!g_thread) { g_running = false; svcCloseHandle(g_cancel_ev); snprintf(g_err, sizeof g_err, "thread"); return false; }
   alog("QR scanner started (%s camera)", inner ? "inner" : "outer");
   return true;
