@@ -744,7 +744,7 @@ static void remove_stale(const char *base) {
 
 #define PAR 6
 static uint64_t g_inst_start;
-static uint64_t g_ms_sd, g_ms_net;     /* diagnostics: time in file operations / in the network calls */
+static uint64_t g_ms_sd, g_ms_net, g_ms_open, g_ms_close, g_ms_ren;     /* diagnostics: time in file operations / in the network calls */
 static long g_connects;                 /* diagnostics: new HTTPS connections opened by an install, and the time spent waiting */
 static double g_sum_tls, g_sum_first;
 typedef struct { CURL *c; FILE *f; unsigned idx; uint64_t got; bool active; char tmp[340], dst[330]; } slot;
@@ -785,11 +785,11 @@ static void job_install(void) {
     unsigned next = 0, done = 0;
     int active = 0, running = 0, k;
     bool bad = false;
-    uint64_t t_a;
+    uint64_t t_a, t_b;
     memset(sl, 0, sizeof sl);
     g_connects = 0;
     g_sum_tls = g_sum_first = 0;
-    g_ms_sd = g_ms_net = 0;
+    g_ms_sd = g_ms_net = g_ms_open = g_ms_close = g_ms_ren = 0;
     for (k = 0; k < PAR; k++) { sl[k].c = curl_easy_init(); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
     while ((next < g_nf || active > 0) && !cancelled() && !bad) {
       CURLMsg *msg;
@@ -804,10 +804,12 @@ static void job_install(void) {
         slash = strrchr(rel, '/');
         if (!tr_path_ok(rel)) { fail(TRE_BADPATH, rel); bad = true; break; }
         if (slash) { snprintf(dirrel, sizeof dirrel, "%.*s", (int)(slash - rel), rel); mkdir_p(base, dirrel); }
+        t_b = now_ms();
         snprintf(s2->dst, sizeof s2->dst, "%s/%s", base, rel);
         snprintf(s2->tmp, sizeof s2->tmp, "%s.nsdtmp", s2->dst);
         snprintf(src, sizeof src, "%s/arquivos/%s", pk.path, rel);
         s2->f = fopen(s2->tmp, "wb");
+        g_ms_open += now_ms() - t_b;
         if (!s2->f) { fail(TRE_IO, rel); bad = true; break; }
         s2->got = 0;
         s2->idx = next++;
@@ -844,7 +846,9 @@ static void job_install(void) {
           g_sum_first += first;
         }
         curl_multi_remove_handle(g_mh, d->c);
+        t_b = now_ms();
         fclose(d->f);
+        g_ms_close += now_ms() - t_b;
         d->f = NULL;
         d->active = false;
         active--;
@@ -857,8 +861,10 @@ static void job_install(void) {
           break;
         }
         if (g_files[d->idx].size && d->got != g_files[d->idx].size) { remove(d->tmp); fail(TRE_SIZE, file_at(d->idx)); bad = true; break; }
+        t_b = now_ms();
         remove(d->dst);
         if (rename(d->tmp, d->dst) != 0) { remove(d->tmp); fail(TRE_IO, file_at(d->idx)); bad = true; break; }
+        g_ms_ren += now_ms() - t_b;
         g_bytes_base += d->got;
         done++;
       }
@@ -882,8 +888,11 @@ static void job_install(void) {
     LightLock_Unlock(&g_lock);
   }
   if (cancelled()) { fail(TRE_CANCELLED, ""); goto out; }
-  alog("Translations: %u files, %llu KiB in %lu s; %ld new connections, waits: TLS %.0f s, first byte %.0f s (sums); loop: card %lu s, network %lu s", g_nf,
-       (unsigned long long)(g_bytes_base >> 10), (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects, g_sum_tls, g_sum_first, (unsigned long)(g_ms_sd / 1000), (unsigned long)(g_ms_net / 1000));
+  alog("Translations: %u files, %llu KiB in %lu s, %ld new connections", g_nf, (unsigned long long)(g_bytes_base >> 10),
+       (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects);
+  alog("Waits summed: TLS %.0f s, first byte %.0f s", g_sum_tls, g_sum_first);
+  alog("Loop: network %lu s, card %lu s (create %lu, close %lu, rename %lu)", (unsigned long)(g_ms_net / 1000), (unsigned long)(g_ms_sd / 1000),
+       (unsigned long)(g_ms_open / 1000), (unsigned long)(g_ms_close / 1000), (unsigned long)(g_ms_ren / 1000));
   remove_stale(base);
   if (!write_record(&pk, base)) { fail(TRE_IO, ".nsd-pack.json"); goto out; }
   alog("Translations: %s installed", pk.ref.id);
