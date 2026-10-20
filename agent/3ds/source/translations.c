@@ -57,6 +57,7 @@ static bool cancelled(void) { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE
 static void touch(void) { g_st.revision++; }
 static void set_state(trs_state s) { LightLock_Lock(&g_lock); g_st.state = s; touch(); LightLock_Unlock(&g_lock); }
 static void fail(tr_error e, const char *detail) {
+  alog("Translations: failed (error %d) %.80s", (int)e, detail ? detail : "");
   LightLock_Lock(&g_lock);
   g_st.state = TRS_ERROR;
   g_st.error = e;
@@ -505,6 +506,7 @@ static bool collect_files(const char *packpath, collect *c) {
   buf b = {0, 0, 0, 8u * 1024u * 1024u, false};
   snprintf(dir, sizeof dir, "%s/arquivos/", packpath);
   snprintf(prefix, sizeof prefix, "%s/arquivos/", packpath);
+  memset(c, 0, sizeof *c); /* the byte count starts from zero */
   c->prefix = prefix;
   c->plen = strlen(prefix);
   c->err = TRE_NONE;
