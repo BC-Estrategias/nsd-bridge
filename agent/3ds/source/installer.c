@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 
 #include "alog.h"
@@ -528,6 +529,90 @@ static CURLcode run_curl(const char *url, xfer *x, bool range) {
   return code;
 }
 
+
+/* ------------------------------------------------------------------------------------------------ speed test */
+/* A URL ending in "#speedtest" does not install anything: it downloads a few MB with each of four variations of the network
+ * code and throws the data away, so the effect of each choice can be measured against a fast server. */
+typedef struct { uint64_t bytes, limit, t0; } bench_x;
+static size_t on_bench(void *p, size_t a, size_t b, void *ud) {
+  bench_x *x = ud;
+  (void)p;
+  x->bytes += a * b;
+  return (cancelled() || x->bytes >= x->limit) ? 0 : a * b;
+}
+static int on_bench_xfer(void *ud, curl_off_t a, curl_off_t b, curl_off_t c, curl_off_t d) {
+  bench_x *x = ud;
+  (void)a; (void)b; (void)c; (void)d;
+  return (cancelled() || now_ms() - x->t0 > 25000) ? 1 : 0; /* never longer than 25 s per variation */
+}
+static int on_bench_sockopt(void *p, curl_socket_t fd, curlsocktype purpose) {
+  int size = 64 * 1024;
+  (void)p; (void)purpose;
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
+  return CURL_SOCKOPT_OK;
+}
+static unsigned bench_one(const char *url, bool use_multi, bool big_window, uint64_t limit) {
+  CURL *c = curl_easy_init();
+  bench_x x = {0, limit, now_ms()};
+  struct curl_blob ca;
+  uint64_t el;
+  if (!c) return 0;
+  ca.data = (void *)nsd_ca_pem;
+  ca.len = (size_t)(nsd_ca_pem_end - nsd_ca_pem);
+  ca.flags = CURL_BLOB_NOCOPY;
+  curl_easy_setopt(c, CURLOPT_URL, url);
+  curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_setopt(c, CURLOPT_CAINFO_BLOB, &ca);
+  curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+  curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
+  curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
+  curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_bench);
+  curl_easy_setopt(c, CURLOPT_WRITEDATA, &x);
+  curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, on_bench_xfer);
+  curl_easy_setopt(c, CURLOPT_XFERINFODATA, &x);
+  if (big_window) curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, on_bench_sockopt);
+  x.t0 = now_ms();
+  if (!use_multi) {
+    (void)curl_easy_perform(c);
+  } else {
+    CURLM *mh = curl_multi_init();
+    int running = 1;
+    curl_multi_add_handle(mh, c);
+    while (running && !cancelled() && x.bytes < limit && now_ms() - x.t0 <= 25000) {
+      if (curl_multi_perform(mh, &running) != CURLM_OK) break;
+      if (running) curl_multi_poll(mh, NULL, 0, 50, NULL);
+    }
+    curl_multi_remove_handle(mh, c);
+    curl_multi_cleanup(mh);
+  }
+  el = now_ms() - x.t0;
+  curl_easy_cleanup(c);
+  return el > 200 ? (unsigned)(x.bytes * 1000 / 1024 / el) : 0;
+}
+static void run_bench(const char *url_with_fragment) {
+  static const char *const names[4] = {"easy", "multi 50 ms", "easy + 64K window", "multi + 64K window"};
+  char url[1100];
+  unsigned r[4];
+  size_t n = strlen(url_with_fragment);
+  int i;
+  snprintf(url, sizeof url, "%.*s", (int)(n - 10), url_with_fragment); /* without "#speedtest" */
+  LightLock_Lock(&g_lock);
+  g_st.is_bench = 1;
+  LightLock_Unlock(&g_lock);
+  set_state(INS_INSTALLING);
+  for (i = 0; i < 4 && !cancelled(); i++) {
+    r[i] = bench_one(url, (i & 1) != 0, i >= 2, 6u * 1024u * 1024u);
+    alog("Speed test: %s: %u KiB/s", names[i], r[i]);
+    LightLock_Lock(&g_lock);
+    g_st.bench_kib[i] = r[i];
+    touch();
+    LightLock_Unlock(&g_lock);
+  }
+  set_state(cancelled() ? INS_IDLE : INS_DONE);
+}
 /* ---------------------------------------------------------------------------------------------------- the job */
 static void wait_answer(void) {
   while (!g_answered && !cancelled()) svcSleepThread(50 * 1000000LL);
@@ -591,6 +676,7 @@ static void run_job(void *arg) {
     x.probe = probe;
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) { fail(INS_E_NET, 0); goto done; }
     curl_ready = true;
+    if (strlen(g_src) > 10 && strcmp(g_src + strlen(g_src) - 10, "#speedtest") == 0) { run_bench(g_src); goto done; }
     code = run_curl(g_src, &x, true);
     if (cancelled()) { set_state(INS_IDLE); goto done; }
     if (x.probe_len < CIA_PROBE_BYTES && code != CURLE_OK) { alog("Install: probe failed (curl %d: %s, http %ld)", (int)code, curl_easy_strerror(code), g_http_code); fail(INS_E_NET, 0); goto done; }

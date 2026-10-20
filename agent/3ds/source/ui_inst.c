@@ -301,6 +301,11 @@ void uii_flow_draw(const ui_model *m) {
       ui_text(200, 184, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("Estimating the time left...", "Estimando o tempo restante..."));
     }
     ui_text(200, 200, 0.38f, COL_YELLOW, UI_CENTER, "%s", UI_T("HOME and sleep are off until it finishes.", "HOME e repouso ficam desligados até terminar."));
+  } else if (s->state == INS_DONE && s->is_bench) {
+    static const char *const names[4] = {"easy", "multi 50 ms", "easy + 64K window", "multi + 64K window"};
+    int i;
+    ui_text(200, 60, 0.55f, COL_CYAN, UI_CENTER, "%s", UI_T("Speed test", "Teste de velocidade"));
+    for (i = 0; i < 4; i++) ui_text(60, 90 + (float)i * 22, 0.48f, COL_WHITE, 0, "%-20s %5u KiB/s", names[i], s->bench_kib[i]);
   } else if (s->state == INS_DONE) {
     ui_text(200, 150, 0.7f, COL_GREEN, UI_CENTER, "%s", UI_T("Installed", "Instalado"));
     ui_text(200, 176, 0.38f, COL_DIM, UI_CENTER, "SHA-256 %.32s...", s->sha_hex);
