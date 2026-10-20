@@ -260,7 +260,7 @@ static void draw_details(const title_entry *t) {
   else ui_text(120, y, 0.42f, COL_WHITE, 0, "%s  %s    %s  %s", UI_T("Version", "Versão"), ver, UI_T("Size", "Tamanho"), size);
   y += 16;
   ui_text(120, y, 0.42f, t->media == MEDIATYPE_NAND ? COL_YELLOW : COL_GREEN, 0, "%s  -  %s", media_name(t->media), kind_name(t));
-  if (t->twl && t->size < 512u * 1024u) ui_text(120, y + 16, 0.4f, COL_DIM, 0, "%s", UI_T("Likely a forwarder: the ROM is on the SD.", "Provável atalho: a ROM está no SD."));
+  if (t->kind == KIND_DSIWARE && t->size < 512u * 1024u) ui_text(120, y + 16, 0.4f, COL_DIM, 0, "%s", UI_T("Likely a forwarder: the ROM is on the SD.", "Provável atalho: a ROM está no SD."));
   if (titles_is_self(t)) ui_text(12, 150, 0.42f, COL_CYAN, 0, "%s", UI_T("This is NSD Bridge itself.", "Este é o próprio NSD Bridge."));
   else if (!titles_can_delete(t) && t->media == MEDIATYPE_NAND) ui_text(12, 150, 0.42f, COL_YELLOW, 0, "%s", UI_T("System memory: read-only here.", "Memória do sistema: só leitura aqui."));
 }

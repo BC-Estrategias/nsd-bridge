@@ -84,12 +84,12 @@ const char *titles_message(void) { return g_msg; }
 bool titles_message_ok(void) { return g_msg_ok; }
 bool titles_is_self(const title_entry *t) { return t && t->id == OWN_TITLE; }
 /* What can be deleted from here: titles on the SD card, and DSiWare (system memory). The rest of system memory is read-only. */
-bool titles_can_delete(const title_entry *t) { return t && !titles_is_self(t) && (t->media == MEDIATYPE_SD || (t->media == MEDIATYPE_NAND && t->twl)); }
+bool titles_can_delete(const title_entry *t) { return t && !titles_is_self(t) && (t->media == MEDIATYPE_SD || (t->media == MEDIATYPE_NAND && t->kind == KIND_DSIWARE)); }
 
 static title_kind classify(uint64_t id, bool *twl) {
   uint32_t hi = (uint32_t)(id >> 32);
   *twl = (hi & 0x8000) != 0 && (hi >> 16) == 0x0004;
-  if (*twl) return KIND_DSIWARE;
+  if (*twl) return hi == 0x00048004 ? KIND_DSIWARE : KIND_SYSTEM; /* 00048005 / 0004800F are DSi system apps and data */
   switch (hi) {
     case 0x00040000: return KIND_APP;
     case 0x0004000E: return KIND_UPDATE;
