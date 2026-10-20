@@ -35,6 +35,7 @@ typedef enum {
   UI_INST_NO,
   UI_INST_CANCEL,
   UI_INST_DISMISS,
+  UI_TR_LINK,   /* type the link of the translations share */
   UI_UPDATE,    /* check for / install an update */
   UI_EXIT,
   UI_PAIR_YES,  /* answer to a pairing request */
@@ -91,6 +92,7 @@ void ui_show_installer_menu(void);
 const char *ui_arg_str(void);  /* the text that goes with UI_INST_SD */
 void ui_set_arg_str(const char *s);
 int ui_arg(void);  /* the index that goes with the last UI_UNPAIR_ONE */
+void uitr_set_message(const char *m);  /* the note shown on the Translations screen when no link is set (ui_trans.c) */
 bool ui_pt(void);  /* true when the console is set to Portuguese: all strings pick pt-BR */
 #define UI_T(en, pt) (ui_pt() ? (pt) : (en))
 

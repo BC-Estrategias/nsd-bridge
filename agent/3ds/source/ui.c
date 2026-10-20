@@ -15,7 +15,7 @@ static C3D_RenderTarget *g_top, *g_bot;
 static C2D_TextBuf g_tb;
 static bool g_ready, g_pt;
 
-enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_TITLES, SCR_COUNT };
+enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_TITLES, SCR_TRANSL, SCR_COUNT };
 static int g_screen = SCR_MAIN, g_log_off = 0;
 static int g_sel[SCR_COUNT] = {1, 0, 0, 0, 0, 0, 0, 0}; /* the main menu starts on the row after Updates: a stray A never starts an install */
 static int g_arg;
@@ -118,7 +118,7 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 }
 
 /* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
-enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIRING, IT_INSTALLER, IT_TITLES, IT_LOG, IT_EXIT, IT_COUNT };
+enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIRING, IT_INSTALLER, IT_TITLES, IT_TRANSL, IT_LOG, IT_EXIT, IT_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
 enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SEEDS, SI_COUNT };
 
@@ -132,6 +132,7 @@ static const char *item_name(int i) {
     case IT_PAIRING: return UI_T("Pairing", "Pareamento");
     case IT_INSTALLER: return UI_T("Installer", "Instalador");
     case IT_TITLES: return UI_T("Titles", "Títulos");
+    case IT_TRANSL: return UI_T("Translations", "Traduções");
     case IT_LOG: return UI_T("Activity log", "Log de atividade");
     default: return UI_T("Exit", "Sair");
   }
@@ -167,6 +168,7 @@ static ui_action activate(const ui_model *m) {
       case IT_PAIRING: go(SCR_MCP); return UI_NONE;
       case IT_INSTALLER: go(SCR_INST); return UI_NONE;
       case IT_TITLES: uit_open(); go(SCR_TITLES); return UI_NONE;
+      case IT_TRANSL: uitr_open(); go(SCR_TRANSL); return UI_NONE;
       case IT_LOG: g_log_off = 0; go(SCR_LOG); return UI_NONE;
       default: return UI_EXIT;
     }
@@ -207,6 +209,12 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
     return UI_NONE;
   }
   if (uii_flow_active(m)) return uii_flow_handle(down, touch, m, redraw);
+  if (g_screen == SCR_TRANSL) {
+    bool leave = false;
+    ui_action a = uitr_handle(down, held, touch, redraw, &leave);
+    if (leave) { go(SCR_MAIN); *redraw = true; }
+    return a;
+  }
   if (g_screen == SCR_TITLES) {
     bool leave = false;
     uit_handle(down, held, touch, redraw, &leave);
@@ -257,7 +265,7 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
     else if (down & (KEY_DUP | KEY_CPAD_UP)) { if (n) g_sel[cur_screen()] = (sel + n - 1) % n; *redraw = true; }
     else if ((down & KEY_A) && n > 0) { *redraw = true; return activate(m); }
     else if ((down & KEY_TOUCH) && touch->py >= UI_LIST_Y) {
-      int r = ui_row_at(touch->py), top = g_screen == SCR_DEVICES && sel >= UI_LIST_ROWS ? sel - UI_LIST_ROWS + 1 : 0;
+      int r = ui_row_at(touch->py), top = (g_screen == SCR_DEVICES || g_screen == SCR_MAIN) && sel >= UI_LIST_ROWS ? sel - UI_LIST_ROWS + 1 : 0;
       r = r < 0 ? -1 : r + top;
       if (r >= 0 && r < n) {
         /* the first tap selects, a tap on the selected row runs it (a stray touch never exits, changes the mode or unpairs) */
@@ -356,13 +364,14 @@ void ui_list_row(int i, int sel, int top, const char *name, const char *val, uin
 }
 
 static void draw_main(const ui_model *m) {
-  int i;
+  int i, main_top;
   char info[80], val[48];
   snprintf(info, sizeof info, "SD: %s %s   %s%s%s", m->sd_free[0] ? m->sd_free : "-", m->sd_free[0] ? UI_T("free", "livres") : "",
            m->net == 3 ? m->ip : "", m->net == 3 ? ":" : "", m->net == 3 ? "6464" : "");
   ui_scene_bottom(COL_BOT_BG);
   ui_bottom_chrome(info, UI_T("Main menu", "Menu principal"), UI_T("A: Select   X: Mode   Y: Pair   START: Exit", "A: Selecionar  X: Modo  Y: Parear  START: Sair"));
-  for (i = 0; i < IT_COUNT; i++) {
+  main_top = g_sel[SCR_MAIN] >= UI_LIST_ROWS ? g_sel[SCR_MAIN] - UI_LIST_ROWS + 1 : 0;
+  for (i = main_top; i < IT_COUNT && i < main_top + UI_LIST_ROWS; i++) {
     uint32_t ink = COL_INK;
     val[0] = '\0';
     switch (i) {
@@ -384,7 +393,7 @@ static void draw_main(const ui_model *m) {
       case IT_PAIRING: snprintf(val, sizeof val, "%d", m->paired_n); break;
       default: break;
     }
-    ui_list_row(i, g_sel[SCR_MAIN], 0, item_name(i), val, ink);
+    ui_list_row(i, g_sel[SCR_MAIN], main_top, item_name(i), val, ink);
   }
 }
 
@@ -470,6 +479,12 @@ void ui_draw(const ui_model *m) {
   ui_begin();
   if (uii_flow_active(m)) {
     uii_flow_draw(m);
+    if (m->pairing == 2) draw_pair_request(m);
+    ui_end();
+    return;
+  }
+  if (g_screen == SCR_TRANSL) {
+    uitr_draw(m);
     if (m->pairing == 2) draw_pair_request(m);
     ui_end();
     return;

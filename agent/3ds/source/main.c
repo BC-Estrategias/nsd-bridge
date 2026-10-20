@@ -18,6 +18,7 @@
 #include "alog.h"
 #include "installer.h"
 #include "titles.h"
+#include "translations.h"
 #include "qr.h"
 #include "ui.h"
 #include "updater.h"
@@ -894,6 +895,7 @@ int main(int argc, char **argv) {
   updater_init(argc > 0 ? argv[0] : NULL);
   installer_init();
   titles_init();
+  tr_init();
   refresh_pending();
 #else
   (void)argc;
@@ -1005,6 +1007,23 @@ int main(int argc, char **argv) {
           case UI_INST_SD:
             if (!installer_start_file(ui_arg_str(), NULL, NULL)) alog("Install: busy, not started");
             break;
+          case UI_TR_LINK: {
+            /* the link of the translations share; the keyboard takes over the screen */
+            static char link[300];
+            SwkbdState kb;
+            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 2, (int)sizeof link - 40);
+            swkbdSetHintText(&kb, "https://.../s/xxxxxxxx");
+            swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+            swkbdSetFeatures(&kb, SWKBD_FIXED_WIDTH);
+            if (tr_configured()) snprintf(link, sizeof link, "%s", tr_link());
+            else link[0] = '\0';
+            if (swkbdInputText(&kb, link, sizeof link) == SWKBD_BUTTON_CONFIRM && link[0]) {
+              if (tr_set_link(link)) { alog("Translations: link set"); uitr_set_message(""); tr_list(true); }
+              else uitr_set_message(ui_pt() ? "Link inválido (https://.../s/código)." : "Invalid link (https://.../s/code).");
+            }
+            draw_pending = true;
+            break;
+          }
           case UI_INST_TYPE_URL: {
             /* the system keyboard takes over the screen; on return the next frame redraws */
             static char url[1100];
@@ -1105,7 +1124,8 @@ int main(int argc, char **argv) {
         }
       }
       {
-        static unsigned last_ins_rev = 0, last_titles_rev = 0;
+        static unsigned last_ins_rev = 0, last_titles_rev = 0, last_tr_rev = 0;
+        { tr_status ts; tr_get(&ts); if (ts.revision != last_tr_rev) { last_tr_rev = ts.revision; changed = true; draw_now = true; } }
         if (titles_revision() != last_titles_rev) { last_titles_rev = titles_revision(); changed = true; draw_now = true; }
         ins_status is;
         installer_get(&is);
@@ -1156,6 +1176,7 @@ quit:
   power_wake();
   qr_stop();
   aptUnhook(&g_apt_cookie);
+  tr_shutdown();
   titles_shutdown();
   installer_shutdown();
   updater_shutdown();

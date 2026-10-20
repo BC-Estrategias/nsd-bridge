@@ -40,4 +40,11 @@ void uit_shutdown(void);
 void uit_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bool *leave);
 void uit_draw(const ui_model *m);   /* draws both screens */
 
+/* ---- translations screens (ui_trans.c) ---- */
+void uitr_open(void);
+bool uitr_flow_active(void);
+ui_action uitr_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bool *leave);
+void uitr_draw(const ui_model *m);   /* draws both screens */
+void uitr_set_message(const char *m);
+
 #endif
