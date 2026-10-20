@@ -18,6 +18,11 @@ const NDP = (globalThis as any).NDP;
 const run = promisify(execFile);
 const CLI = fileURLToPath(new URL("../../cli/src/main.ts", import.meta.url));
 const suite = SKIP ? describe.skip : describe;
+/** The agent's stdout reaches this process on another channel than its replies: wait for the line instead of racing it. */
+async function seen(a: { stdout: () => string }, re: RegExp): Promise<void> {
+  for (let i = 0; i < 150 && !re.test(a.stdout()); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.match(a.stdout(), re);
+}
 const code = async (p: Promise<unknown>) => { try { await p; return "OK"; } catch (e: any) { return e.statusName as string; } };
 
 suite("INSTALL_URL", () => {
@@ -31,8 +36,8 @@ suite("INSTALL_URL", () => {
       await c.hello();
       await c.installUrl("http://192.168.1.10:8000/game.cia");
       await c.installUrl("https://example.com/a/b.cia?x=1");
-      assert.match(open.stdout(), /INSTALL_URL http:\/\/192\.168\.1\.10:8000\/game\.cia/);
-      assert.match(open.stdout(), /INSTALL_URL https:\/\/example\.com\/a\/b\.cia\?x=1/);
+      await seen(open, /INSTALL_URL http:\/\/192\.168\.1\.10:8000\/game\.cia/);
+      await seen(open, /INSTALL_URL https:\/\/example\.com\/a\/b\.cia\?x=1/);
       for (const bad of ["ftp://x/y.cia", "javascript:alert(1)", "http://a b/c.cia", "http://x/\ny", "game.cia", "", "https://x/é.cia"]) {
         const before = open.stdout();
         assert.equal(await code(c.installUrl(bad)), bad === "" ? "BAD_REQUEST" : "BAD_REQUEST", JSON.stringify(bad));
@@ -42,14 +47,14 @@ suite("INSTALL_URL", () => {
       // an optional seed travels with the request (16 bytes) and reaches the platform; anything else is refused
       const seed = Uint8Array.from({ length: 16 }, (_, i) => 0xa0 + i);
       await c.installUrl("http://192.168.1.10:8000/seeded.cia", undefined, seed);
-      assert.match(open.stdout(), /INSTALL_URL http:\/\/192\.168\.1\.10:8000\/seeded\.cia seed=a0a1a2a3a4a5a6a7a8a9aaabacadaeaf/);
+      await seen(open, /INSTALL_URL http:\/\/192\.168\.1\.10:8000\/seeded\.cia seed=a0a1a2a3a4a5a6a7a8a9aaabacadaeaf/);
       await assert.rejects(c.installUrl("http://x/y.cia", undefined, new Uint8Array(15)), (e: any) => e instanceof RangeError);
       await c.installFile("/cias/seeded.cia", new Uint8Array(32).fill(2), seed);
-      assert.match(open.stdout(), /INSTALL_PATH \/cias\/seeded\.cia sha256=0202.* seed=a0a1/);
+      await seen(open, /INSTALL_PATH \/cias\/seeded\.cia sha256=0202.* seed=a0a1/);
       // a .cia already on the console's card: accepted with its hash; anything else is refused before the platform sees it
       const sha = new Uint8Array(32).fill(7);
       await c.installFile("/cias/My Game.CIA", sha);
-      assert.match(open.stdout(), /INSTALL_PATH \/cias\/My Game\.CIA sha256=0707/);
+      await seen(open, /INSTALL_PATH \/cias\/My Game\.CIA sha256=0707/);
       for (const bad of ["/cias/readme.txt", "/cias/../../etc/x.cia", "relative/x.cia", "/x.cia.bak", "/.cia"]) {
         const before = open.stdout();
         const r = await code(c.installFile(bad));
@@ -71,7 +76,7 @@ suite("INSTALL_URL", () => {
       // the CLI sends it too
       const ok = await run(process.execPath, [CLI, "install", `127.0.0.1:${open.port}`, "http://10.0.0.2/z.cia"], { encoding: "utf8" });
       assert.match(ok.stdout, /Sent\. Confirm on the 3DS/);
-      assert.match(open.stdout(), /INSTALL_URL http:\/\/10\.0\.0\.2\/z\.cia/);
+      await seen(open, /INSTALL_URL http:\/\/10\.0\.0\.2\/z\.cia/);
       await assert.rejects(run(process.execPath, [CLI, "install", `127.0.0.1:${dsi.port}`, "http://x/y.cia"], { encoding: "utf8" }), (e: { stderr: string }) => /only the 3DS has an installer/.test(e.stderr));
     } finally {
       for (const a of [open, closed, dsi]) a.proc.kill();
@@ -87,12 +92,12 @@ suite("INSTALL_URL", () => {
       await w.open();
       assert.equal((await w.hello()).auth, "none");
       await w.installUrl("https://github.com/x/y/releases/download/v1/app.cia");
-      assert.match(a.stdout(), /INSTALL_URL https:\/\/github\.com\/x\/y\/releases\/download\/v1\/app\.cia/);
+      await seen(a, /INSTALL_URL https:\/\/github\.com\/x\/y\/releases\/download\/v1\/app\.cia/);
       await w.installPath("/3ds/nintendo-dev-agent/game.cia", new Uint8Array(32).fill(1));
-      assert.match(a.stdout(), /INSTALL_PATH \/3ds\/nintendo-dev-agent\/game\.cia sha256=0101/);
+      await seen(a, /INSTALL_PATH \/3ds\/nintendo-dev-agent\/game\.cia sha256=0101/);
       // the console's own validation (the page client does not pre-check)
       await w.installUrl("http://x/seed.cia", undefined, new Uint8Array(16).fill(9));
-      assert.match(a.stdout(), /INSTALL_URL http:\/\/x\/seed\.cia seed=09090909/);
+      await seen(a, /INSTALL_URL http:\/\/x\/seed\.cia seed=09090909/);
       const before = a.stdout();
       await assert.rejects(w.installUrl("http://x/bad.cia", undefined, new Uint8Array(15)), (e: any) => e.statusName === "BAD_REQUEST");
       await assert.rejects(w.installPath("/cias/readme.txt"), (e: any) => e.statusName === "BAD_REQUEST");
@@ -155,7 +160,7 @@ suite("INSTALL_URL", () => {
       await assert.rejects(run(process.execPath, [CLI, "install", `127.0.0.1:${a.port}`, "http://x/y.cia", "--sha256", "abc"], { encoding: "utf8" }), (e: { stderr: string }) => /64 hex digits/.test(e.stderr));
       const h = "ab".repeat(32);
       await run(process.execPath, [CLI, "install", `127.0.0.1:${a.port}`, "https://example.com/y.cia", "--sha256", h], { encoding: "utf8" });
-      assert.match(a.stdout(), new RegExp(`INSTALL_URL https://example\\.com/y\\.cia sha256=${h}`));
+      await seen(a, new RegExp(`INSTALL_URL https://example\\.com/y\\.cia sha256=${h}`));
     } finally {
       a.proc.kill();
       rmSync(dir, { recursive: true, force: true });
