@@ -1012,13 +1012,14 @@ int main(int argc, char **argv) {
             static char link[300];
             SwkbdState kb;
             swkbdInit(&kb, SWKBD_TYPE_NORMAL, 2, (int)sizeof link - 40);
-            swkbdSetHintText(&kb, "https://.../s/xxxxxxxx");
+            swkbdSetHintText(&kb, ui_pt() ? "https://.../s/xxxxxxxx   (- = padrão)" : "https://.../s/xxxxxxxx   (- = default)");
             swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
             swkbdSetFeatures(&kb, SWKBD_FIXED_WIDTH);
             if (tr_configured()) snprintf(link, sizeof link, "%s", tr_link());
             else link[0] = '\0';
             if (swkbdInputText(&kb, link, sizeof link) == SWKBD_BUTTON_CONFIRM && link[0]) {
-              if (tr_set_link(link)) { alog("Translations: link set"); uitr_set_message(""); tr_list(true); }
+              if (!strcmp(link, "-")) { tr_reset_link(); alog("Translations: back to the default link"); uitr_set_message(""); if (tr_configured()) tr_list(true); }
+              else if (tr_set_link(link)) { alog("Translations: link set"); uitr_set_message(""); tr_list(true); }
               else uitr_set_message(ui_pt() ? "Link inválido (https://.../s/código)." : "Invalid link (https://.../s/code).");
             }
             draw_pending = true;

@@ -45,6 +45,8 @@ void tr_shutdown(void);
 bool tr_configured(void);
 const char *tr_link(void);
 bool tr_set_link(const char *url);          /* validates, saves in config/translations-url, forgets the saved catalog */
+void tr_reset_link(void);                   /* back to the link this build ships with (if any) */
+bool tr_link_is_default(void);
 
 void tr_list(bool force);                   /* reads the catalog (the saved copy unless force or there is none) */
 int tr_count(void);

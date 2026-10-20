@@ -31,7 +31,10 @@ extern const char nsd_ca_pem[], nsd_ca_pem_end[]; /* the Mozilla CA bundle, link
 
 static LightLock g_lock;
 static Thread g_worker;
-static bool g_init, g_busy;
+#ifndef NSD_DEFAULT_TRANSLATIONS_URL
+#define NSD_DEFAULT_TRANSLATIONS_URL ""
+#endif
+static bool g_init, g_busy, g_link_default;
 static tr_status g_st;
 static tr_pack *g_packs;
 static int g_np;
@@ -74,16 +77,38 @@ static bool slurp(const char *path, char *out, size_t cap, size_t *len) {
   return true;
 }
 
+/* The link in config/translations-url wins; without one the link this build ships with (NDEV_TRANSLATIONS_URL) is used. */
 static void load_config(void) {
   char line[300];
   size_t i;
   g_cfg = false;
+  g_link_default = false;
   g_link[0] = g_base[0] = g_token[0] = '\0';
-  if (!slurp(CONFIG_PATH, line, sizeof line, NULL)) return;
-  for (i = 0; line[i]; i++) if (line[i] == '\r' || line[i] == '\n') { line[i] = '\0'; break; }
-  if (!tr_parse_share(line, g_base, sizeof g_base, g_token, sizeof g_token)) return;
-  snprintf(g_link, sizeof g_link, "%s", line);
-  g_cfg = true;
+  if (slurp(CONFIG_PATH, line, sizeof line, NULL)) {
+    for (i = 0; line[i]; i++) if (line[i] == '\r' || line[i] == '\n') { line[i] = '\0'; break; }
+    if (tr_parse_share(line, g_base, sizeof g_base, g_token, sizeof g_token)) {
+      snprintf(g_link, sizeof g_link, "%s", line);
+      g_cfg = true;
+      return;
+    }
+  }
+  if (NSD_DEFAULT_TRANSLATIONS_URL[0] && tr_parse_share(NSD_DEFAULT_TRANSLATIONS_URL, g_base, sizeof g_base, g_token, sizeof g_token)) {
+    snprintf(g_link, sizeof g_link, "%s", NSD_DEFAULT_TRANSLATIONS_URL);
+    g_cfg = true;
+    g_link_default = true;
+  }
+}
+
+bool tr_link_is_default(void) { return g_link_default; }
+
+void tr_reset_link(void) {
+  remove(CONFIG_PATH);
+  remove(CACHE_PATH);
+  LightLock_Lock(&g_lock);
+  g_np = 0;
+  touch();
+  LightLock_Unlock(&g_lock);
+  load_config();
 }
 
 bool tr_configured(void) { return g_cfg; }
