@@ -33,9 +33,17 @@ static const char *filter_name(void) {
 }
 static const char *sort_name(void) { return sortk == 0 ? UI_T("by name", "por nome") : sortk == 1 ? UI_T("by size", "por tamanho") : UI_T("by ID", "por ID"); }
 
-/* The system calls games and homebrew apps the same thing. Official titles have low unique IDs (the low half of the title ID
- * is below 0x04000000); homebrew CIAs, NSD Bridge included, use high ones. A guess, good for a list filter. */
-static bool is_game(const title_entry *t) { return t->kind == KIND_APP && (uint32_t)t->id < 0x04000000u; }
+/* The system calls games and homebrew apps the same thing, so this is a guess from the product code and the ID (checked against
+ * 71 titles on a real console): official New 3DS / Virtual Console titles have a KTR- code; the other official ones have a
+ * CTR-P- / CTR-N- code and an ID below 0x00300000. Homebrew uses other codes (CTR-H-, CTR-HB-, free text) or, when it borrows
+ * CTR-P- / CTR-N-, a much higher ID. */
+static bool is_game(const title_entry *t) {
+  bool official_code;
+  if (t->kind != KIND_APP) return false;
+  if (!strncmp(t->code, "KTR-", 4)) return true;
+  official_code = !t->code[0] || !strncmp(t->code, "CTR-P-", 6) || !strncmp(t->code, "CTR-N-", 6);
+  return official_code && (uint32_t)t->id < 0x00300000u;
+}
 
 static bool in_filter(const title_entry *t) {
   switch (filter) {
