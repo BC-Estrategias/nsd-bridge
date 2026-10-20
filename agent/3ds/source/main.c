@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -287,11 +288,19 @@ static void apt_hook(APT_HookType hook, void *param) {
  * Any button or touch wakes them (that first press is swallowed so it cannot cancel by accident). */
 #define PW_BOTTOM_IDLE_MS 15000
 #define PW_TOP_IDLE_MS 90000
-static bool g_lcd_ok = false, g_pw_bot_off = false, g_pw_top_off = false;
+/* The backlight service is held open only while a screen is off: an app that keeps it open all the time made the HOME button
+ * freeze the console. */
+static bool g_lcd_open = false, g_pw_bot_off = false, g_pw_top_off = false;
 static void power_wake(void) {
-  if (!g_lcd_ok) return;
+  if (!g_lcd_open) return;
   if (g_pw_bot_off) { GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM); g_pw_bot_off = false; }
   if (g_pw_top_off) { GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP); g_pw_top_off = false; }
+  gspLcdExit();
+  g_lcd_open = false;
+}
+static bool lcd_open(void) {
+  if (!g_lcd_open) g_lcd_open = R_SUCCEEDED(gspLcdInit());
+  return g_lcd_open;
 }
 /* Returns true when the press only woke the screens (down is cleared then). */
 static bool power_step(bool installing, u32 *down, u32 held, uint64_t now) {
@@ -299,7 +308,6 @@ static bool power_step(bool installing, u32 *down, u32 held, uint64_t now) {
   static bool keep = false, was_installing = false;
   bool input = (*down != 0) || (held & KEY_TOUCH);
   bool woke = false;
-  if (!g_lcd_ok) return false;
   if (installing && !was_installing) {
     struct stat kb;
     keep = stat("sdmc:/3ds/nintendo-dev-agent/config/keep-screens-on", &kb) == 0;
@@ -318,8 +326,8 @@ static bool power_step(bool installing, u32 *down, u32 held, uint64_t now) {
     power_wake();
     return woke;
   }
-  if (!g_pw_bot_off && now - last_input >= PW_BOTTOM_IDLE_MS) { GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM); g_pw_bot_off = true; }
-  if (!g_pw_top_off && now - last_input >= PW_TOP_IDLE_MS) { GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP); g_pw_top_off = true; }
+  if (!g_pw_bot_off && now - last_input >= PW_BOTTOM_IDLE_MS && lcd_open()) { GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM); g_pw_bot_off = true; }
+  if (!g_pw_top_off && now - last_input >= PW_TOP_IDLE_MS && lcd_open()) { GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP); g_pw_top_off = true; }
   return woke;
 }
 
@@ -739,7 +747,15 @@ static void read_battery(uint64_t now) {
   bool plugged = false;
   if (now < next) return;
   next = now + 10000;
-  if (g_mcu_ok && R_SUCCEEDED(r1 = MCUHWC_GetBatteryLevel(&level))) g_battery = level > 100 ? 100 : level;
+  if (g_mcu_ok && R_SUCCEEDED(r1 = MCUHWC_GetBatteryLevel(&level))) {
+    /* The reading sometimes jumps (a log showed 78% / 100% / 78% every 10 s while charging): a change of more than 5 points
+     * is only believed when the next reading agrees with it, so one wild value never reaches the screen. */
+    static int pending = -1;
+    int v = level > 100 ? 100 : level;
+    if (g_battery < 0 || abs(v - g_battery) <= 5) { g_battery = v; pending = -1; }
+    else if (pending >= 0 && abs(v - pending) <= 2) { g_battery = v; pending = -1; }
+    else pending = v;
+  }
   if (g_ptm_ok && R_SUCCEEDED(r2 = PTMU_GetBatteryChargeState(&charge))) g_charging = charge != 0;
   if (g_ptm_ok && R_SUCCEEDED(r3 = PTMU_GetAdapterState(&plugged))) g_adapter = plugged;
   if (R_FAILED(r1) || R_FAILED(r2) || R_FAILED(r3)) {
@@ -771,7 +787,6 @@ int main(int argc, char **argv) {
   alog_init();
 #ifndef AGENT_TEXT_UI
   aptHook(&g_apt_cookie, apt_hook, NULL);
-  g_lcd_ok = R_SUCCEEDED(gspLcdInit());
 #endif
   g_start_ms = now_ms(NULL);
 
@@ -994,7 +1009,7 @@ int main(int argc, char **argv) {
             break;
           }
           case UI_INST_RECV_ON: g_recv_open = true; alog("Install: receiving from the browser"); break;
-          case UI_INST_RECV_OFF: g_recv_open = false; break;
+          case UI_INST_RECV_OFF: g_recv_open = false; alog("Install: left Receive from the browser"); break;
           case UI_INST_QR_ON: g_qr_wanted = true; g_qr_bad = false; g_qr_restart = false; (void)qr_start(g_qr_inner); break;
           case UI_INST_QR_OFF: g_qr_wanted = false; qr_stop(); break;
           case UI_INST_QR_SWITCH: g_qr_inner = !g_qr_inner; qr_stop(); (void)qr_start(g_qr_inner); break;
@@ -1122,7 +1137,6 @@ quit:
   alog("Exiting");
 #ifndef AGENT_TEXT_UI
   power_wake();
-  if (g_lcd_ok) gspLcdExit();
   qr_stop();
   aptUnhook(&g_apt_cookie);
   installer_shutdown();

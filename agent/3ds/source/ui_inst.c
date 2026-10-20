@@ -309,7 +309,7 @@ void uii_flow_draw(const ui_model *m) {
     ui_text(200, 200, 0.38f, COL_YELLOW, UI_CENTER, "%s", UI_T("HOME and sleep are off until it finishes.", "HOME e repouso ficam desligados até terminar."));
     ui_text(200, 218, 0.45f, COL_WHITE, UI_CENTER, "%s", UI_T("B: Cancel   (screens dim to save battery)", "B: Cancelar   (telas apagam p/ poupar bateria)"));
   } else if (s->state == INS_DONE && s->is_bench) {
-    static const char *const names[4] = {"easy", "multi 50 ms", "easy + 64K window", "multi + 64K window"};
+    static const char *const names[4] = {"easy", "2 connections", "4 connections", "8 connections"};
     int i;
     ui_text(200, 60, 0.55f, COL_CYAN, UI_CENTER, "%s", UI_T("Speed test", "Teste de velocidade"));
     for (i = 0; i < 4; i++) ui_text(60, 90 + (float)i * 22, 0.48f, COL_WHITE, 0, "%-20s %5u KiB/s", names[i], s->bench_kib[i]);
