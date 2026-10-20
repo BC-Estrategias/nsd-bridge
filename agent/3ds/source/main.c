@@ -664,15 +664,28 @@ static void draw(uint64_t now) {
 }
 #endif /* AGENT_TEXT_UI */
 
-/* Battery for the top screen: read every 20 seconds (the services answer quickly, but there is no need to ask more often). */
+/* Battery for the top screen: read every 10 seconds. Every change (and every failed read) goes to the log, so a level that
+ * looks stuck can be told apart from a reading that stopped working. */
 static void read_battery(uint64_t now) {
   static uint64_t next = 0;
+  static int last_level = -2, last_charge = -1, last_adapter = -1, fails = 0;
   u8 level = 0, charge = 0;
+  Result r1 = -1, r2 = -1, r3 = -1;
+  bool plugged = false;
   if (now < next) return;
-  next = now + 20000;
-  if (g_mcu_ok && R_SUCCEEDED(MCUHWC_GetBatteryLevel(&level))) g_battery = level > 100 ? 100 : level;
-  if (g_ptm_ok && R_SUCCEEDED(PTMU_GetBatteryChargeState(&charge))) g_charging = charge != 0;
-  if (g_ptm_ok) { bool plugged = false; if (R_SUCCEEDED(PTMU_GetAdapterState(&plugged))) g_adapter = plugged; }
+  next = now + 10000;
+  if (g_mcu_ok && R_SUCCEEDED(r1 = MCUHWC_GetBatteryLevel(&level))) g_battery = level > 100 ? 100 : level;
+  if (g_ptm_ok && R_SUCCEEDED(r2 = PTMU_GetBatteryChargeState(&charge))) g_charging = charge != 0;
+  if (g_ptm_ok && R_SUCCEEDED(r3 = PTMU_GetAdapterState(&plugged))) g_adapter = plugged;
+  if (R_FAILED(r1) || R_FAILED(r2) || R_FAILED(r3)) {
+    if (fails++ < 3) alog("Battery: read failed (level 0x%08lX, charge 0x%08lX, adapter 0x%08lX)", (unsigned long)r1, (unsigned long)r2, (unsigned long)r3);
+  }
+  if (g_battery != last_level || (int)g_charging != last_charge || (int)g_adapter != last_adapter) {
+    alog("Battery: %d%%%s%s", g_battery, g_charging ? " charging" : "", g_adapter ? " (charger plugged in)" : "");
+    last_level = g_battery;
+    last_charge = (int)g_charging;
+    last_adapter = (int)g_adapter;
+  }
 }
 
 int main(int argc, char **argv) {
