@@ -32,7 +32,9 @@ ifeq ($(NDEV_DEV),1)
 CFLAGS  += -DAGENT_START_MODE=NDP_MODE_DEVELOPMENT
 endif
 # NDEV_TEXT_UI=1 builds the old text-console UI instead of the graphical (citro2d) one
-# NDEV_TRANSLATIONS_URL=https://host/s/token: the translations share this build uses unless the owner types another one
+# NDEV_TRANSLATIONS_URL=https://host/s/token: the translations share this build uses unless the owner types another one.
+# Without it the one line of default-translations-url is used (a READ-ONLY link: it ends up inside the app); NDEV_TRANSLATIONS_URL= (empty) builds without one.
+NDEV_TRANSLATIONS_URL ?= $(shell cat default-translations-url 2>/dev/null)
 ifneq ($(strip $(NDEV_TRANSLATIONS_URL)),)
 CFLAGS  += -DNSD_DEFAULT_TRANSLATIONS_URL=\"$(NDEV_TRANSLATIONS_URL)\"
 endif

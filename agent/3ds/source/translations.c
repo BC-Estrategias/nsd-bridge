@@ -35,6 +35,8 @@ static Thread g_worker;
 #define NSD_DEFAULT_TRANSLATIONS_URL ""
 #endif
 static bool g_init, g_busy, g_link_default;
+/* The share either contains a traducoes/ folder or IS that folder: g_root is "traducoes" or "" (paths are always from the share's root). */
+static char g_root[16];
 static tr_status g_st;
 static tr_pack *g_packs;
 static int g_np;
@@ -246,7 +248,8 @@ static int list_dir(const char *path) {
   static char p[420];
   buf b = {0, 0, 0, 2u * 1024u * 1024u, false};
   int n;
-  snprintf(p, sizeof p, "%s/", path);
+  if (path[0]) snprintf(p, sizeof p, "%s/", path);
+  else p[0] = '\0';
   LightLock_Lock(&g_lock);
   g_st.list_requests++;
   touch();
@@ -286,7 +289,7 @@ static void save_cache(void) {
   mkdir("sdmc:/3ds/nintendo-dev-agent/cache", 0777);
   f = fopen(CACHE_PATH, "wb");
   if (!f) return;
-  fprintf(f, "# %s\n", g_link);
+  fprintf(f, "# %s\n@ %s\n", g_link, g_root);
   for (i = 0; i < g_np; i++) fprintf(f, "%s\t%s - %s\t%s\t%s\n", g_packs[i].ref.lang, g_packs[i].ref.id, g_packs[i].ref.game, g_packs[i].ref.team, g_packs[i].ref.version);
   fclose(f);
 }
@@ -300,6 +303,15 @@ static bool load_cache(void) {
     size_t l = strlen(line);
     while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
     ok = !strcmp(line + 2, g_link);
+  }
+  if (ok) {
+    ok = fgets(line, sizeof line, f) && line[0] == '@' && line[1] == ' ';
+    if (ok) {
+      size_t l = strlen(line);
+      while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+      ok = !strcmp(line + 2, ROOT) || line[2] == '\0';
+      snprintf(g_root, sizeof g_root, "%s", line + 2);
+    }
   }
   g_np = 0;
   while (ok && fgets(line, sizeof line, f)) {
@@ -320,7 +332,8 @@ static bool load_cache(void) {
     e = strchr(ver, '\t');
     if (e) *e = '\0';
     if (!tr_parse_ref(lang, idn, team, ver, &r)) continue;
-    snprintf(path, sizeof path, ROOT "/%s/%s/%s/%s", lang, idn, team, ver);
+    if (g_root[0]) snprintf(path, sizeof path, "%s/%s/%s/%s/%s", g_root, lang, idn, team, ver);
+    else snprintf(path, sizeof path, "%s/%s/%s/%s", lang, idn, team, ver);
     add_pack(&r, path);
   }
   fclose(f);
@@ -332,14 +345,25 @@ static void job_list(void) {
   int nl, l, ng, g, nt, t, nv, v;
   static char p1[420], p2[420], p3[420];
   static dav_entry langs[24];
+  int i, nr;
   g_np = 0;
-  nl = list_dir(ROOT);
-  if (nl < 0) { net_fail("listing"); return; }
+  /* the share's root: a "traducoes" folder inside it, or the root already is the catalog */
+  nr = list_dir("");
+  if (nr < 0) { net_fail("listing"); return; }
+  g_root[0] = '\0';
+  for (i = 0; i < nr; i++) if (g_es[i].is_dir && !strcmp(g_es[i].name, ROOT)) snprintf(g_root, sizeof g_root, "%s", ROOT);
+  if (g_root[0]) {
+    nl = list_dir(g_root);
+    if (nl < 0) { net_fail("listing"); return; }
+  } else {
+    nl = nr;
+  }
   memcpy(langs, g_es, sizeof langs[0] * (size_t)(nl < 24 ? nl : 24));
   for (l = 0; l < nl && l < 24 && !cancelled(); l++) {
     static dav_entry games[ES_MAX];
     if (!langs[l].is_dir) continue;
-    snprintf(p1, sizeof p1, ROOT "/%s", langs[l].name);
+    if (g_root[0]) snprintf(p1, sizeof p1, "%s/%s", g_root, langs[l].name);
+    else snprintf(p1, sizeof p1, "%s", langs[l].name);
     ng = list_dir(p1);
     if (ng < 0) { net_fail("listing"); return; }
     memcpy(games, g_es, sizeof games[0] * (size_t)ng);
