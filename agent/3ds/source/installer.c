@@ -274,9 +274,12 @@ static bool sink_finish(sink *k, const cia_info *ci) {
   k->opened = false;
   {
     uint64_t el = now_ms() - g_start_ms;
-    alog("Install: finish 0x%08lX, %llu bytes in %lu s (%.2f MiB/s); inside AM writes %lu s; the network waited %lu s for the writer, the writer %lu s for data; sha256 %s",
-         (unsigned long)rc, (unsigned long long)k->in, (unsigned long)(el / 1000), el ? (double)k->in / 1048576.0 / ((double)el / 1000.0) : 0.0,
-         (unsigned long)(g_am_ms / 1000), (unsigned long)(k->wait_prod_ms / 1000), (unsigned long)(k->wait_writer_ms / 1000), g_st.sha_hex);
+    /* each log line holds 96 characters: short lines, or the end of a long one is lost */
+    alog("Install: finish 0x%08lX, %llu bytes in %lu s (%.2f MiB/s)", (unsigned long)rc, (unsigned long long)k->in, (unsigned long)(el / 1000),
+         el ? (double)k->in / 1048576.0 / ((double)el / 1000.0) : 0.0);
+    alog("AM writes %lu s; network waited %lu s for the writer; writer waited %lu s", (unsigned long)(g_am_ms / 1000),
+         (unsigned long)(k->wait_prod_ms / 1000), (unsigned long)(k->wait_writer_ms / 1000));
+    alog("sha256 %s", g_st.sha_hex);
   }
   sink_release(k);
   if (R_FAILED(rc)) { fail(INS_E_AM, (uint32_t)rc); return false; }
@@ -354,7 +357,7 @@ static int seed_obtain(u64 title_id, uint8_t seed[16], int *src) {
           if (status == 200 && R_SUCCEEDED(rc = httpcDownloadData(&ctx, seed, 16, &got)) && got == 16) {
             result = 1;
             *src = 3;
-            if (attempt) alog("Seed: fetched without the certificate check (the console does not trust Nintendo's seed server certificate)");
+            if (attempt) alog("Seed: fetched without the certificate check (Nintendo's CA is not trusted)");
           } else if (status == 404 || status == 403) {
             result = 2;
           } else {
@@ -446,9 +449,9 @@ static bool judge(const uint8_t *buf, size_t n, uint64_t known_total) {
   if (!enough_space(&ci)) { fail(INS_E_SPACE, 0); return false; }
   id = ci.title_id;
   replaces = title_installed(ci.on_nand ? MEDIATYPE_NAND : MEDIATYPE_SD, id, &ti);
-  alog("Install: title %016llX v0x%04X %s %s, %llu bytes; installed already: %s", (unsigned long long)ci.title_id, ci.title_version,
-       ci.on_nand ? "NAND" : "SD", ci.cls == CIA_CLASS_SYSTEM ? "system" : ci.cls == CIA_CLASS_DSIWARE ? "DSiWare" : "app", (unsigned long long)ci.total_size,
-       replaces ? "yes" : "no");
+  alog("Install: title %016llX v0x%04X %s %s, %llu bytes", (unsigned long long)ci.title_id, ci.title_version,
+       ci.on_nand ? "NAND" : "SD", ci.cls == CIA_CLASS_SYSTEM ? "system" : ci.cls == CIA_CLASS_DSIWARE ? "DSiWare" : "app", (unsigned long long)ci.total_size);
+  alog("Install: installed already: %s", replaces ? "yes (it is removed first)" : "no");
   g_pre_result = -1;
   g_st.seed_pre = -1;
   if (ci.cls == CIA_CLASS_APP && !ci.on_nand) {
