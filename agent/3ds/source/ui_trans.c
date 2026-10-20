@@ -328,8 +328,8 @@ void uitr_draw(const ui_model *m) {
     for (i = top; i < nview && i < top + UI_LIST_ROWS; i++) {
       const tr_pack *q = tr_at(view[i]);
       char nm[140];
-      snprintf(nm, sizeof nm, "%s %s", mark_text(q), q->ref.game);
-      snprintf(val, sizeof val, "%.14s %s", q->ref.team, q->ref.version);
+      snprintf(nm, sizeof nm, "%s %.32s", mark_text(q), q->ref.game);
+      snprintf(val, sizeof val, "%s", q->ref.version); /* the team is in the panel above: the name needs the room */
       ui_list_row(i, sel, top, nm, val, q->mark == 0 ? COL_INK : COL_INK_GREEN);
     }
   }
