@@ -744,6 +744,7 @@ static void remove_stale(const char *base) {
 
 #define PAR 6
 static uint64_t g_inst_start;
+static uint64_t g_ms_sd, g_ms_net;     /* diagnostics: time in file operations / in the network calls */
 static long g_connects;                 /* diagnostics: new HTTPS connections opened by an install, and the time spent waiting */
 static double g_sum_tls, g_sum_first;
 typedef struct { CURL *c; FILE *f; unsigned idx; uint64_t got; bool active; char tmp[340], dst[330]; } slot;
@@ -784,14 +785,17 @@ static void job_install(void) {
     unsigned next = 0, done = 0;
     int active = 0, running = 0, k;
     bool bad = false;
+    uint64_t t_a;
     memset(sl, 0, sizeof sl);
     g_connects = 0;
     g_sum_tls = g_sum_first = 0;
+    g_ms_sd = g_ms_net = 0;
     for (k = 0; k < PAR; k++) { sl[k].c = curl_easy_init(); if (!sl[k].c) { fail(TRE_IO, "memory"); goto out; } }
     while ((next < g_nf || active > 0) && !cancelled() && !bad) {
       CURLMsg *msg;
       int left;
       uint64_t live = 0;
+      t_a = now_ms();
       for (k = 0; k < PAR && next < g_nf; k++) {
         slot *s2 = &sl[k];
         const char *rel, *slash;
@@ -815,9 +819,13 @@ static void job_install(void) {
         s2->active = true;
         active++;
       }
+      g_ms_sd += now_ms() - t_a;
       if (bad) break;
+      t_a = now_ms();
       if (curl_multi_perform(g_mh, &running) != CURLM_OK) { g_net_code = CURLE_RECV_ERROR; g_http_code = 0; net_fail("transfer"); bad = true; break; }
       if (running) curl_multi_poll(g_mh, NULL, 0, 50, NULL);
+      g_ms_net += now_ms() - t_a;
+      t_a = now_ms();
       while ((msg = curl_multi_info_read(g_mh, &left)) != NULL) {
         slot *d = NULL;
         long http_code = 0;
@@ -854,6 +862,7 @@ static void job_install(void) {
         g_bytes_base += d->got;
         done++;
       }
+      g_ms_sd += now_ms() - t_a;
       for (k = 0; k < PAR; k++) if (sl[k].active) live += sl[k].got;
       LightLock_Lock(&g_lock);
       g_st.files_done = done;
@@ -873,8 +882,8 @@ static void job_install(void) {
     LightLock_Unlock(&g_lock);
   }
   if (cancelled()) { fail(TRE_CANCELLED, ""); goto out; }
-  alog("Translations: %u files, %llu KiB in %lu s; %ld new connections, waits: TLS %.0f s, first byte %.0f s (sums over files)", g_nf,
-       (unsigned long long)(g_bytes_base >> 10), (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects, g_sum_tls, g_sum_first);
+  alog("Translations: %u files, %llu KiB in %lu s; %ld new connections, waits: TLS %.0f s, first byte %.0f s (sums); loop: card %lu s, network %lu s", g_nf,
+       (unsigned long long)(g_bytes_base >> 10), (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects, g_sum_tls, g_sum_first, (unsigned long)(g_ms_sd / 1000), (unsigned long)(g_ms_net / 1000));
   remove_stale(base);
   if (!write_record(&pk, base)) { fail(TRE_IO, ".nsd-pack.json"); goto out; }
   alog("Translations: %s installed", pk.ref.id);
