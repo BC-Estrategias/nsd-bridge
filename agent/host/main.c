@@ -93,7 +93,7 @@ static void keys_changed(void *ctx, const ndp_keystore *keys) {
 
 /* --accept-installs: INSTALL_URL requests are taken and printed ("INSTALL_URL <url>"), so tests can see them. */
 static int g_accept_installs = 0;
-static int host_install_url(void *ctx, const char *url, const char *path, const uint8_t *sha256, char *detail, size_t cap) {
+static int host_install_url(void *ctx, const char *url, const char *path, const uint8_t *sha256, const uint8_t *seed, char *detail, size_t cap) {
   (void)ctx;
   if (!g_accept_installs) { snprintf(detail, cap, "open the install screen on the console first"); return NDP_ST_BUSY; }
   if (path) printf("INSTALL_PATH %s", path);
@@ -102,6 +102,11 @@ static int host_install_url(void *ctx, const char *url, const char *path, const 
     int i;
     printf(" sha256=");
     for (i = 0; i < 32; i++) printf("%02x", sha256[i]);
+  }
+  if (seed) {
+    int i;
+    printf(" seed=");
+    for (i = 0; i < 16; i++) printf("%02x", seed[i]);
   }
   printf("\n");
   fflush(stdout);

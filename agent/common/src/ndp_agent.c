@@ -147,8 +147,8 @@ static size_t do_device_info(ndp_agent *a, const ndp_header *req, uint8_t *out, 
 
 /* INSTALL_URL: validates the URL, then hands it to the platform (which asks the owner on the console). */
 static size_t do_install_url(ndp_agent *a, const ndp_header *req, const uint8_t *pl, uint8_t *out, size_t cap) {
-  const uint8_t *u = NULL, *p = NULL, *h = NULL;
-  size_t lu = 0, lp = 0, lh = 0, i;
+  const uint8_t *u = NULL, *p = NULL, *h = NULL, *sd = NULL;
+  size_t lu = 0, lp = 0, lh = 0, ls = 0, i;
   char url[NDP_URL_MAX + 1], path[NDP_PATH_MAX + 1], detail[96];
   const char *purl = NULL, *ppath = NULL;
   int rc, has_url, has_path;
@@ -177,8 +177,10 @@ static size_t do_install_url(ndp_agent *a, const ndp_header *req, const uint8_t 
   }
   if (ndp_tlv_find(pl, req->payload_len, NDP_TAG_SHA256, &h, &lh) && lh != 32)
     return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "sha256 must be 32 bytes", 0);
+  if (ndp_tlv_find(pl, req->payload_len, NDP_TAG_SEED, &sd, &ls) && ls != 16)
+    return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "seed must be 16 bytes", 0);
   detail[0] = '\0';
-  rc = a->cfg.install_url(a->cfg.install_url_ctx, purl, ppath, lh == 32 ? h : NULL, detail, sizeof detail);
+  rc = a->cfg.install_url(a->cfg.install_url_ctx, purl, ppath, lh == 32 ? h : NULL, ls == 16 ? sd : NULL, detail, sizeof detail);
   if (rc != NDP_OK) return ndp_agent_error(out, cap, req, (uint16_t)rc, detail[0] ? detail : "the console cannot take this request now", 0);
   if (cap < NDP_HEADER_SIZE) return 0;
   ndp_tlv_w_init(&w, out + NDP_HEADER_SIZE, cap - NDP_HEADER_SIZE);

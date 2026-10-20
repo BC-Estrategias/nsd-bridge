@@ -39,6 +39,13 @@ suite("INSTALL_URL", () => {
         assert.equal(open.stdout(), before, "a refused URL never reaches the platform");
       }
       assert.equal(await code(c.installUrl("http://x/" + "a".repeat(1100))), "BAD_REQUEST", "too long");
+      // an optional seed travels with the request (16 bytes) and reaches the platform; anything else is refused
+      const seed = Uint8Array.from({ length: 16 }, (_, i) => 0xa0 + i);
+      await c.installUrl("http://192.168.1.10:8000/seeded.cia", undefined, seed);
+      assert.match(open.stdout(), /INSTALL_URL http:\/\/192\.168\.1\.10:8000\/seeded\.cia seed=a0a1a2a3a4a5a6a7a8a9aaabacadaeaf/);
+      await assert.rejects(c.installUrl("http://x/y.cia", undefined, new Uint8Array(15)), (e: any) => e instanceof RangeError);
+      await c.installFile("/cias/seeded.cia", new Uint8Array(32).fill(2), seed);
+      assert.match(open.stdout(), /INSTALL_PATH \/cias\/seeded\.cia sha256=0202.* seed=a0a1/);
       // a .cia already on the console's card: accepted with its hash; anything else is refused before the platform sees it
       const sha = new Uint8Array(32).fill(7);
       await c.installFile("/cias/My Game.CIA", sha);
@@ -84,7 +91,10 @@ suite("INSTALL_URL", () => {
       await w.installPath("/3ds/nintendo-dev-agent/game.cia", new Uint8Array(32).fill(1));
       assert.match(a.stdout(), /INSTALL_PATH \/3ds\/nintendo-dev-agent\/game\.cia sha256=0101/);
       // the console's own validation (the page client does not pre-check)
+      await w.installUrl("http://x/seed.cia", undefined, new Uint8Array(16).fill(9));
+      assert.match(a.stdout(), /INSTALL_URL http:\/\/x\/seed\.cia seed=09090909/);
       const before = a.stdout();
+      await assert.rejects(w.installUrl("http://x/bad.cia", undefined, new Uint8Array(15)), (e: any) => e.statusName === "BAD_REQUEST");
       await assert.rejects(w.installPath("/cias/readme.txt"), (e: any) => e.statusName === "BAD_REQUEST");
       await assert.rejects(w.installPath("cias/x.cia"), (e: any) => e.statusName === "PATH_INVALID");
       await assert.rejects(w.installPath("/cias/../../x.cia"), (e: any) => e.statusName === "PATH_INVALID");

@@ -280,7 +280,7 @@ static void apt_hook(APT_HookType hook, void *param) {
 }
 #endif
 
-static int install_url_cb(void *ctx, const char *url, const char *path, const uint8_t *sha256, char *detail, size_t cap) {
+static int install_url_cb(void *ctx, const char *url, const char *path, const uint8_t *sha256, const uint8_t *seed, char *detail, size_t cap) {
   (void)ctx;
 #ifndef AGENT_TEXT_UI
   if (!g_recv_open) { snprintf(detail, cap, "open Installer > Receive from the browser on the console first"); return NDP_ST_BUSY; }
@@ -288,15 +288,15 @@ static int install_url_cb(void *ctx, const char *url, const char *path, const ui
   if (path) {
     char full[NDP_PATH_MAX + 8];
     snprintf(full, sizeof full, "sdmc:%s", path);
-    if (!installer_start_file(full, sha256)) { snprintf(detail, cap, "the console is busy updating or installing"); return NDP_ST_BUSY; }
+    if (!installer_start_file(full, sha256, seed)) { snprintf(detail, cap, "the console is busy updating or installing"); return NDP_ST_BUSY; }
     alog("Install: request from the browser (file %.60s)", path);
     return NDP_OK;
   }
-  if (!installer_start_url(url, sha256)) { snprintf(detail, cap, "the console is busy updating or installing"); return NDP_ST_BUSY; }
+  if (!installer_start_url(url, sha256, seed)) { snprintf(detail, cap, "the console is busy updating or installing"); return NDP_ST_BUSY; }
   alog("Install: request from the browser (%.60s)", url);
   return NDP_OK;
 #else
-  (void)url; (void)path; (void)sha256;
+  (void)url; (void)path; (void)sha256; (void)seed;
   snprintf(detail, cap, "this build has no installer");
   return NDP_ST_UNSUPPORTED_COMMAND;
 #endif
@@ -924,7 +924,7 @@ int main(int argc, char **argv) {
             break;
           }
           case UI_INST_SD:
-            if (!installer_start_file(ui_arg_str(), NULL)) alog("Install: busy, not started");
+            if (!installer_start_file(ui_arg_str(), NULL, NULL)) alog("Install: busy, not started");
             break;
           case UI_INST_TYPE_URL: {
             /* the system keyboard takes over the screen; on return the next frame redraws */
@@ -939,7 +939,7 @@ int main(int argc, char **argv) {
               /* like FBI: a bare address is taken as http:// */
               if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) snprintf(full, sizeof full, "http://%s", url);
               else snprintf(full, sizeof full, "%s", url);
-              if (!installer_start_url(full, NULL)) alog("Install: busy, not started");
+              if (!installer_start_url(full, NULL, NULL)) alog("Install: busy, not started");
             }
             draw_pending = true;
             break;
@@ -1003,7 +1003,7 @@ int main(int argc, char **argv) {
           if (!strncmp(code, "http://", 7) || !strncmp(code, "https://", 8)) {
             g_qr_bad = false;
             alog("QR code read: %.80s", code);
-            if (!installer_start_url(code, NULL)) alog("Install: busy, not started");
+            if (!installer_start_url(code, NULL, NULL)) alog("Install: busy, not started");
             /* done with the camera: back to the Installer menu, it is not switched on again by itself (scan again from there) */
             g_qr_wanted = false;
             ui_show_installer_menu();

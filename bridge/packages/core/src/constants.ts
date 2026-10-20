@@ -132,6 +132,7 @@ export const Tag = {
   PAIR_STATE: 0x0063,
   PAIR_ENTRY: 0x0064,
   URL: 0x0065,
+  SEED: 0x0066,
 } as const;
 
 export type Mode = "READ_ONLY" | "DEVELOPMENT" | "FULL";

@@ -35,6 +35,8 @@ typedef struct {
   unsigned eta_s;         /* estimated seconds left (smoothed), 0 = not known yet */
   int is_bench;           /* a speed test, not an install */
   unsigned bench_kib[4];  /* KiB/s of: easy, multi (50 ms), easy + big TCP window, multi + big TCP window; 0 = failed */
+  int seed_pre;           /* checked before the download: -1 not applicable, 0 off, 1 available, 2 the title uses none, 3 could not be checked */
+  int seed_src;           /* with seed_pre == 1: 1 the request, 2 /fbi/seed, 3 Nintendo's server */
   int seed;               /* after an install: 0 not tried, 1 registered, 2 the title needs none, 3 could not get it */
   char sha_hex[65];       /* the SHA-256 of what was installed, once it finished */
   ins_error error;
@@ -49,8 +51,8 @@ bool installer_busy(void);          /* probing, waiting for confirmation, or ins
 void installer_get(ins_status *out);
 
 /* Both return false if another install (or an update) is in progress. `sha256` may be NULL. */
-bool installer_start_file(const char *sd_path, const uint8_t *sha256);  /* e.g. "sdmc:/cias/game.cia"; sha256 may be NULL */
-bool installer_start_url(const char *url, const uint8_t *sha256);
+bool installer_start_file(const char *sd_path, const uint8_t *sha256, const uint8_t *seed);  /* e.g. "sdmc:/cias/game.cia"; sha256 may be NULL */
+bool installer_start_url(const char *url, const uint8_t *sha256, const uint8_t *seed);
 void installer_confirm(bool yes);   /* answer to INS_CONFIRM */
 void installer_cancel(void);        /* stop an install in progress */
 void installer_dismiss(void);       /* leave INS_DONE / INS_ERROR: back to INS_IDLE */

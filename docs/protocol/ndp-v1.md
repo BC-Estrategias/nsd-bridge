@@ -163,6 +163,7 @@ ERR carrega, opcionalmente: `0x0001 detail` (str, texto humano curto, **informat
 | 0x0033 | entry | bytes | FS_LIST RES, **repetível**: `type u8 ‖ size u64 ‖ name utf-8` (ver §13) |
 | 0x0034 | type | u8 | FS_STAT RES: 1 = arquivo, 2 = diretório |
 | 0x0035 | size | u64 | FS_STAT RES: bytes |
+| 0x0066 | seed | 16 bytes | INSTALL_URL REQ: opcional: a seed do título (registrada no sistema depois da instalação; sem ela o console busca no servidor da Nintendo ou usa /fbi/seed) |
 | 0x0065 | url | utf-8 | INSTALL_URL REQ: URL `http://` ou `https://`, ASCII imprimível sem espaços, até 1023 bytes |
 | 0x0036 | mtime | u64 | FS_STAT RES: segundos Unix UTC; **0 = desconhecido** |
 | 0x0037 | offset | u64 | FS_READ REQ (padrão 0) |

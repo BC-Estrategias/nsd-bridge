@@ -29,8 +29,8 @@ static Thread g_worker;
 static bool g_init, g_busy;
 static volatile bool g_cancel, g_answered, g_confirmed;
 static char g_src[1100];
-static bool g_is_url, g_have_expect;
-static uint8_t g_expect[32];
+static bool g_is_url, g_have_expect, g_have_seed;
+static uint8_t g_expect[32], g_seed[16]; /* g_seed: given with the request (the page's optional field) */
 
 static bool cancelled(void) { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE) || aptShouldClose(); }
 
@@ -113,6 +113,7 @@ static uint64_t g_am_ms, g_start_ms; /* time spent inside AM writes / since the 
 
 static void sink_release(sink *k);
 static int seed_register(u64 title_id); /* defined below, with the other network code */
+static int seed_preflight(u64 title_id);
 
 static void writer_thread(void *arg) {
   sink *k = arg;
@@ -308,60 +309,84 @@ static Result fs_add_seed(u64 title_id, const uint8_t seed[16]) {
   return (Result)cmd[1];
 }
 
-static int seed_register(u64 title_id) {
+/* Where the seed of a title comes from, in this order: the request itself, a file in FBI's place (it works with no internet,
+ * or when the console talks to a replacement network instead of Nintendo's), Nintendo's seed server.
+ * Result: 1 = found (`seed` filled, `*src` says where), 2 = the server has none (the title does not use one),
+ * 3 = could not find out (no connection, error), 0 = turned off by config/no-seed-download. */
+static int seed_obtain(u64 title_id, uint8_t seed[16], int *src) {
   static const char *const country[] = {"JP", "US", "GB", "GB", "HK", "KR", "TW"};
-  uint8_t seed[16];
-  char url[128];
+  char url[128], path[96];
   u8 region = CFG_REGION_USA;
   u32 status = 0, got = 0;
   httpcContext ctx;
   Result rc;
   int result = 3;
   struct stat nb;
-  {
-    /* a seed file in FBI's place wins (the hShop page offers it for download): it works with no internet, or when the
-     * console talks to a replacement network instead of Nintendo's */
-    char path[96];
-    FILE *f;
-    snprintf(path, sizeof path, "sdmc:/fbi/seed/%016llX.dat", (unsigned long long)title_id);
-    f = fopen(path, "rb");
-    if (f) {
-      size_t n = fread(seed, 1, sizeof seed, f);
-      fclose(f);
-      if (n == sizeof seed) {
-        rc = fs_add_seed(title_id, seed);
-        alog("Install: seed from /fbi/seed/%016llX.dat, result 0x%08lX", (unsigned long long)title_id, (unsigned long)rc);
-        return R_SUCCEEDED(rc) ? 1 : 3;
-      }
-    }
+  FILE *f;
+  *src = 0;
+  if (g_have_seed) { memcpy(seed, g_seed, 16); *src = 1; return 1; }
+  snprintf(path, sizeof path, "sdmc:/fbi/seed/%016llX.dat", (unsigned long long)title_id);
+  f = fopen(path, "rb");
+  if (f) {
+    size_t n = fread(seed, 1, 16, f);
+    fclose(f);
+    if (n == 16) { *src = 2; return 1; }
   }
-  if (stat("sdmc:/3ds/nintendo-dev-agent/config/no-seed-download", &nb) == 0) { alog("Install: seed download is turned off (config/no-seed-download)"); return 0; }
+  if (stat("sdmc:/3ds/nintendo-dev-agent/config/no-seed-download", &nb) == 0) return 0;
   CFGU_SecureInfoGetRegion(&region);
   if (region > CFG_REGION_TWN) region = CFG_REGION_USA;
   snprintf(url, sizeof url, "https://kagiya-ctr.cdn.nintendo.net/title/0x%016llX/ext_key?country=%s", (unsigned long long)title_id, country[region]);
-  if (R_FAILED(rc = httpcInit(0x4000))) { alog("Install: seed: httpcInit 0x%08lX", (unsigned long)rc); return 3; }
+  if (R_FAILED(rc = httpcInit(0x4000))) { alog("Seed: httpcInit 0x%08lX", (unsigned long)rc); return 3; }
   if (R_SUCCEEDED(rc = httpcOpenContext(&ctx, HTTPC_METHOD_GET, url, 1))) {
     if (R_SUCCEEDED(rc = httpcAddRequestHeaderField(&ctx, "User-Agent", "NSD-Bridge/" NDP_AGENT_VERSION)) && R_SUCCEEDED(rc = httpcBeginRequest(&ctx)) &&
         R_SUCCEEDED(rc = httpcGetResponseStatusCodeTimeout(&ctx, &status, 15ull * 1000000000ull))) {
-      if (status == 200 && R_SUCCEEDED(rc = httpcDownloadData(&ctx, seed, sizeof seed, &got)) && got == sizeof seed) {
-        rc = fs_add_seed(title_id, seed);
-        if (R_SUCCEEDED(rc)) result = 1;
-        alog("Install: seed registered, result 0x%08lX", (unsigned long)rc);
+      if (status == 200 && R_SUCCEEDED(rc = httpcDownloadData(&ctx, seed, 16, &got)) && got == 16) {
+        result = 1;
+        *src = 3;
       } else if (status == 404 || status == 403) {
         result = 2;
-        alog("Install: no seed on the server (HTTP %lu): this title does not use one", (unsigned long)status);
       } else {
-        alog("Install: seed request: HTTP %lu, download 0x%08lX, %lu bytes", (unsigned long)status, (unsigned long)rc, (unsigned long)got);
+        alog("Seed: the server answered HTTP %lu (download 0x%08lX, %lu bytes)", (unsigned long)status, (unsigned long)rc, (unsigned long)got);
       }
     } else {
-      alog("Install: seed request failed 0x%08lX", (unsigned long)rc);
+      alog("Seed: the request failed 0x%08lX", (unsigned long)rc);
     }
     httpcCloseContext(&ctx);
   } else {
-    alog("Install: seed: httpcOpenContext 0x%08lX", (unsigned long)rc);
+    alog("Seed: httpcOpenContext 0x%08lX", (unsigned long)rc);
   }
   httpcExit();
   return result;
+}
+
+/* The check done before the download (the title ID is known from the first bytes): is there a seed to be had? It is kept, so
+ * the install does not ask again. */
+static int g_pre_result = -1, g_pre_src;
+static uint8_t g_pre_seed[16];
+static u64 g_pre_id;
+static int seed_preflight(u64 title_id) {
+  g_pre_result = seed_obtain(title_id, g_pre_seed, &g_pre_src);
+  g_pre_id = title_id;
+  alog("Seed check before the download: %s%s", g_pre_result == 1 ? "available" : g_pre_result == 2 ? "the server has none (the title uses none)" : g_pre_result == 0 ? "off" : "could not be checked",
+       g_pre_result == 1 ? (g_pre_src == 1 ? " (from the request)" : g_pre_src == 2 ? " (from /fbi/seed)" : " (from Nintendo's server)") : "");
+  return g_pre_result;
+}
+
+static int seed_register(u64 title_id) {
+  uint8_t seed[16];
+  int src = 0, result;
+  Result rc;
+  if (g_pre_result >= 0 && g_pre_id == title_id) { result = g_pre_result; memcpy(seed, g_pre_seed, 16); src = g_pre_src; }
+  else result = seed_obtain(title_id, seed, &src);
+  g_pre_result = -1;
+  if (result != 1) {
+    if (result == 2) alog("Install: no seed on the server: this title does not use one");
+    else if (result == 3) alog("Install: the seed could not be fetched");
+    return result == 2 ? 2 : result == 0 ? 0 : 3;
+  }
+  rc = fs_add_seed(title_id, seed);
+  alog("Install: seed registered (%s), result 0x%08lX", src == 1 ? "from the request" : src == 2 ? "from /fbi/seed" : "from Nintendo's server", (unsigned long)rc);
+  return R_SUCCEEDED(rc) ? 1 : 3;
 }
 
 
@@ -408,6 +433,13 @@ static bool judge(const uint8_t *buf, size_t n, uint64_t known_total) {
   alog("Install: title %016llX v0x%04X %s %s, %llu bytes; installed already: %s", (unsigned long long)ci.title_id, ci.title_version,
        ci.on_nand ? "NAND" : "SD", ci.cls == CIA_CLASS_SYSTEM ? "system" : ci.cls == CIA_CLASS_DSIWARE ? "DSiWare" : "app", (unsigned long long)ci.total_size,
        replaces ? "yes" : "no");
+  g_pre_result = -1;
+  g_st.seed_pre = -1;
+  if (ci.cls == CIA_CLASS_APP && !ci.on_nand) {
+    int sp = seed_preflight(id); /* before the (long) download: is there a seed to be had? */
+    g_st.seed_pre = sp;
+    g_st.seed_src = g_pre_src;
+  }
   LightLock_Lock(&g_lock);
   g_st.info = ci;
   g_st.has_info = 1;
@@ -712,7 +744,7 @@ done:
   __atomic_store_n(&g_busy, false, __ATOMIC_RELEASE);
 }
 
-static bool begin(const char *src, bool is_url, const uint8_t *sha256) {
+static bool begin(const char *src, bool is_url, const uint8_t *sha256, const uint8_t *seed) {
   const char *h;
   size_t i;
   s32 prio = 0x30;
@@ -722,6 +754,8 @@ static bool begin(const char *src, bool is_url, const uint8_t *sha256) {
   g_is_url = is_url;
   g_have_expect = sha256 != NULL;
   if (sha256) memcpy(g_expect, sha256, 32);
+  g_have_seed = seed != NULL;
+  if (seed) memcpy(g_seed, seed, 16);
   __atomic_store_n(&g_cancel, false, __ATOMIC_RELEASE);
   g_answered = false;
   g_confirmed = false;
@@ -745,8 +779,8 @@ static bool begin(const char *src, bool is_url, const uint8_t *sha256) {
   return true;
 }
 
-bool installer_start_file(const char *sd_path, const uint8_t *sha256) { return begin(sd_path, false, sha256); }
-bool installer_start_url(const char *url, const uint8_t *sha256) { return begin(url, true, sha256); }
+bool installer_start_file(const char *sd_path, const uint8_t *sha256, const uint8_t *seed) { return begin(sd_path, false, sha256, seed); }
+bool installer_start_url(const char *url, const uint8_t *sha256, const uint8_t *seed) { return begin(url, true, sha256, seed); }
 
 void installer_confirm(bool yes) {
   ins_status st;

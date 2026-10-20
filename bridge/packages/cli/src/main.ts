@@ -43,10 +43,11 @@ Usage:
                                                   DSi: download the newest DSi build from GitHub (SHA-256 checked) and send it
                                                   to /nsd-bridge/ (needs DEVELOPMENT mode: press X on the DSi). The 3DS updates
                                                   itself from its Updates menu.
-  ndev install <host[:port]> <file.cia | url> [--sha256 HEX]
+  ndev install <host[:port]> <file.cia | url> [--sha256 HEX] [--seed HEX]
                                                   3DS: offer installing a title. A file is served from this computer (its SHA-256
                                                   goes along; the console checks it before finishing). On the console open
                                                   Installer > Receive from the browser, and confirm there with A
+                                                  --seed: the 32-hex-digit seed of a title that needs one (optional)
   ndev mkdir <host[:port]> <path>                 create a directory (the parent must exist)
   ndev mv    <host[:port]> <from> <to>            move/rename a file or folder (never overwrites; also restores from the trash)
   ndev purge <host[:port]> <path>...              PERMANENTLY delete items inside a trash folder (<root>/.ndp-trash/...), or
@@ -248,15 +249,18 @@ async function main(argv: string[]): Promise<number> {
     // 3DS: ask the console to offer installing a title. The argument is an http(s) URL, or a local file that this command
     // serves itself (with its SHA-256, which the console checks before finishing the install). The owner opens
     // Installer > Receive from the browser on the console and confirms there; nothing is downloaded before that.
-    const { text, rest: pos } = parseFlags(rest, [], [], ["--sha256"]);
+    const { text, rest: pos } = parseFlags(rest, [], [], ["--sha256", "--seed"]);
     const what = pos[0];
     if (!what) throw new Error("install needs a <file.cia> or <url>  (e.g. ndev install 192.168.1.20 game.cia)");
     const wantHash = text.get("--sha256");
     if (wantHash !== undefined && !/^[0-9a-fA-F]{64}$/.test(wantHash)) throw new Error("--sha256 expects 64 hex digits");
+    const wantSeed = text.get("--seed");
+    if (wantSeed !== undefined && !/^[0-9a-fA-F]{32}$/.test(wantSeed)) throw new Error("--seed expects 32 hex digits (16 bytes)");
+    const seed = wantSeed ? Uint8Array.from(Buffer.from(wantSeed, "hex")) : undefined;
     return withClient(target, async (client, host) => {
       if (client.info!.platform !== "3ds") throw new Error(`${host} is a ${client.info!.platform} console: only the 3DS has an installer`);
       if (!existsSync(what)) {
-        await client.installUrl(what, wantHash ? Uint8Array.from(Buffer.from(wantHash, "hex")) : undefined);
+        await client.installUrl(what, wantHash ? Uint8Array.from(Buffer.from(wantHash, "hex")) : undefined, seed);
         console.log("Sent. Confirm on the 3DS (A) to download and install.");
         return 0;
       }
@@ -292,7 +296,7 @@ async function main(argv: string[]): Promise<number> {
         u.connect(parseTarget(target).port, host, () => { const a = u.address().address; u.close(); resolve(a); });
       });
       try {
-        await client.installUrl(`http://${mine}:${port}/${encodeURIComponent(name)}`, hash);
+        await client.installUrl(`http://${mine}:${port}/${encodeURIComponent(name)}`, hash, seed);
         console.log(`Serving ${name} (${(size / 1024 / 1024).toFixed(1)} MiB, sha256 ${hash.toString("hex").slice(0, 16)}…) at http://${mine}:${port}/ .`);
         console.log("Confirm on the 3DS (A). Waiting for the download to finish (Ctrl+C to stop)...");
         const timeout = new Promise<void>((r) => setTimeout(r, 15 * 60 * 1000).unref());

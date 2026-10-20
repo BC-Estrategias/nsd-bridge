@@ -271,16 +271,18 @@
 
     // ---- file system
     /** Asks the 3DS to offer installing a title from this URL; its owner confirms on the console. */
-    async installUrl(url, sha256) {
+    async installUrl(url, sha256, seed) {
       const fields = [[Tag.URL, C.str(url)]];
       if (sha256) fields.push([Tag.SHA256, sha256]);
+      if (seed) fields.push([Tag.SEED, seed]);
       await this.request(Command.INSTALL_URL, C.encodeTlv(fields));
     }
 
     /** Asks the 3DS to offer installing a .cia already on its SD card; its owner confirms on the console. */
-    async installPath(path, sha256) {
+    async installPath(path, sha256, seed) {
       const fields = [[Tag.PATH, C.str(path)]];
       if (sha256) fields.push([Tag.SHA256, sha256]);
+      if (seed) fields.push([Tag.SEED, seed]);
       await this.request(Command.INSTALL_URL, C.encodeTlv(fields));
     }
 

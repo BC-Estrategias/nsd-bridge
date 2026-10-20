@@ -281,6 +281,12 @@ void uii_flow_draw(const ui_model *m) {
     if (s->state == INS_CONFIRM) {
       if (s->hash_expected) ui_text(12, y, 0.42f, COL_GREEN, 0, "%s", UI_T("The SHA-256 will be checked before it is finished.", "O SHA-256 será conferido antes de concluir."));
       else if (s->is_url) ui_text(12, y, 0.42f, COL_DIM, 0, "%s", UI_T("No SHA-256 given: only size and the system's checks.", "Sem SHA-256: só o tamanho e as checagens do sistema."));
+      y += 16;
+      /* the seed was looked up before the download: a title that needs one cannot be opened without it */
+      if (s->seed_pre == 1) ui_text(12, y, 0.42f, COL_GREEN, 0, "%s %s", UI_T("Seed available", "Seed disponível"), s->seed_src == 1 ? UI_T("(from the request)", "(do pedido)") : s->seed_src == 2 ? "(/fbi/seed)" : UI_T("(Nintendo's server)", "(servidor da Nintendo)"));
+      else if (s->seed_pre == 2) ui_text(12, y, 0.42f, COL_DIM, 0, "%s", UI_T("The server has no seed: this title uses none.", "O servidor não tem seed: este título não usa."));
+      else if (s->seed_pre == 3) ui_text(12, y, 0.42f, COL_YELLOW, 0, "%s", UI_T("Could not check the seed now: the game may not open.", "Não consegui checar a seed agora: o jogo pode não abrir."));
+      else if (s->seed_pre == 0) ui_text(12, y, 0.42f, COL_DIM, 0, "%s", UI_T("Seed lookup is turned off.", "A busca de seed está desligada."));
     }
   }
   if (s->state == INS_INSTALLING) {

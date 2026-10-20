@@ -142,7 +142,8 @@ enum ndp_tag {
   NDP_TAG_PAIR_NONCE = 0x0062,
   NDP_TAG_PAIR_STATE = 0x0063,
   NDP_TAG_PAIR_ENTRY = 0x0064, /* PAIR_LIST response, one per paired key: key_id(4) || label (UTF-8, no NUL) */
-  NDP_TAG_URL = 0x0065 /* INSTALL_URL REQ: an http:// or https:// URL (UTF-8, no NUL, at most NDP_URL_MAX bytes) */
+  NDP_TAG_URL = 0x0065, /* INSTALL_URL REQ: an http:// or https:// URL (UTF-8, no NUL, at most NDP_URL_MAX bytes) */
+  NDP_TAG_SEED = 0x0066 /* INSTALL_URL REQ: optional 16-byte seed the title needs (registered with the system after the install) */
 };
 
 /* Entries a filtered (traversal) FS_LIST reads per response, shown or not. */
