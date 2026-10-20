@@ -239,9 +239,11 @@ static void draw_details(const title_entry *t) {
   ui_text(120, y, 0.42f, COL_WHITE, 0, "ID  %s", id);
   y += 16;
   if (t->code[0]) { ui_text(120, y, 0.42f, COL_WHITE, 0, "%s  %s", UI_T("Code", "Código"), t->code); y += 16; }
-  ui_text(120, y, 0.42f, COL_WHITE, 0, "%s  %s    %s  %s", UI_T("Version", "Versão"), ver, UI_T("Size", "Tamanho"), size);
+  if (t->twl) ui_text(120, y, 0.42f, COL_WHITE, 0, "%s  %s", UI_T("Size", "Tamanho"), size); /* DSiWare has no usable version */
+  else ui_text(120, y, 0.42f, COL_WHITE, 0, "%s  %s    %s  %s", UI_T("Version", "Versão"), ver, UI_T("Size", "Tamanho"), size);
   y += 16;
   ui_text(120, y, 0.42f, t->media == MEDIATYPE_NAND ? COL_YELLOW : COL_GREEN, 0, "%s  -  %s", media_name(t->media), kind_name(t));
+  if (t->twl && t->size < 512u * 1024u) ui_text(120, y + 16, 0.4f, COL_DIM, 0, "%s", UI_T("Likely a forwarder: the ROM is on the SD.", "Provável atalho: a ROM está no SD."));
   if (titles_is_self(t)) ui_text(12, 150, 0.42f, COL_CYAN, 0, "%s", UI_T("This is NSD Bridge itself.", "Este é o próprio NSD Bridge."));
   else if (!titles_can_delete(t) && t->media == MEDIATYPE_NAND) ui_text(12, 150, 0.42f, COL_YELLOW, 0, "%s", UI_T("System memory: read-only here.", "Memória do sistema: só leitura aqui."));
 }
@@ -261,6 +263,12 @@ void uit_draw(const ui_model *m) {
   draw_top_header(m);
   if (busy()) {
     ui_text(200, 110, 0.6f, COL_YELLOW, UI_CENTER, "%s", titles_state() == TS_BUSY ? UI_T("Working...", "Trabalhando...") : UI_T("Reading titles...", "Lendo títulos..."));
+    if (titles_state() == TS_LOADING) {
+      int d = 0, t = 0;
+      titles_progress(&d, &t);
+      if (t > 0) ui_text(200, 140, 0.5f, COL_WHITE, UI_CENTER, "%d / %d", d, t);
+      ui_text(200, 170, 0.38f, COL_DIM, UI_CENTER, "%s", UI_T("The first time is slow; the next ones use a saved copy.", "A primeira vez demora; as próximas usam uma cópia salva."));
+    }
     ui_scene_bottom(COL_BOT_BG);
     ui_bottom_chrome(UI_T("Titles", "Títulos"), UI_T("Please wait", "Aguarde"), "");
     return;

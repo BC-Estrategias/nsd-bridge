@@ -38,6 +38,7 @@ void titles_delete(int idx, bool with_ticket);  /* delete titles_at(idx) */
 void titles_pending_delete(int idx);            /* idx < 0: all of them */
 
 int titles_state(void);
+void titles_progress(int *done, int *total);    /* while loading: how many titles were read so far */
 unsigned titles_revision(void);                 /* bumps on every change */
 int titles_count(void);
 const title_entry *titles_at(int i);

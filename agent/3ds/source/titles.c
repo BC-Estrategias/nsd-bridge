@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "alog.h"
 #include "utf16.h"
@@ -31,6 +32,13 @@ static enum { J_NONE, J_LOAD, J_PENDING, J_DELETE, J_PDELETE } g_job;
 static int g_job_idx;
 static bool g_job_ticket;
 static int g_lang = CFG_LANGUAGE_EN;
+static volatile int g_prog_done, g_prog_total;
+#define CACHE_DIR "sdmc:/3ds/nintendo-dev-agent/cache"
+#define CACHE_FILE CACHE_DIR "/titles.bin"
+/* One saved title: what the SMDH said. Reading an SMDH costs 100-170 ms per title, so it is done once per (ID, version). */
+typedef struct { uint64_t id; uint16_t version; uint8_t media, has_icon; char name[64], publisher[48], code[16]; uint16_t icon[48 * 48]; } cache_rec;
+static cache_rec *g_cache;
+static int g_ncache;
 
 static void bump(void) { LightLock_Lock(&g_lock); g_rev++; LightLock_Unlock(&g_lock); }
 static void set_state(int s) { __atomic_store_n(&g_state, s, __ATOMIC_RELEASE); bump(); }
@@ -65,6 +73,7 @@ void titles_shutdown(void) {
   g_init = false;
 }
 
+void titles_progress(int *done, int *total) { *done = g_prog_done; *total = g_prog_total; }
 int titles_state(void) { return __atomic_load_n(&g_state, __ATOMIC_ACQUIRE); }
 unsigned titles_revision(void) { unsigned r; LightLock_Lock(&g_lock); r = g_rev; LightLock_Unlock(&g_lock); return r; }
 int titles_count(void) { return g_nt; }
@@ -126,6 +135,68 @@ static void read_twl(title_entry *t) {
   }
 }
 
+static void cache_load(void) {
+  FILE *f = fopen(CACHE_FILE, "rb");
+  char magic[4];
+  int n = 0;
+  free(g_cache);
+  g_cache = NULL;
+  g_ncache = 0;
+  if (!f) return;
+  if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "NTC1", 4) && fread(&n, sizeof n, 1, f) == 1 && n > 0 && n <= MAX_TITLES) {
+    g_cache = malloc((size_t)n * sizeof *g_cache);
+    if (g_cache && fread(g_cache, sizeof *g_cache, (size_t)n, f) == (size_t)n) g_ncache = n;
+    else { free(g_cache); g_cache = NULL; }
+  }
+  fclose(f);
+}
+
+static void cache_save(void) {
+  FILE *f;
+  int i;
+  cache_rec *r = malloc(sizeof *r);
+  if (!r) return;
+  mkdir("sdmc:/3ds", 0777);
+  mkdir("sdmc:/3ds/nintendo-dev-agent", 0777);
+  mkdir(CACHE_DIR, 0777);
+  f = fopen(CACHE_FILE ".tmp", "wb");
+  if (!f) { free(r); return; }
+  fwrite("NTC1", 1, 4, f);
+  fwrite(&g_nt, sizeof g_nt, 1, f);
+  for (i = 0; i < g_nt; i++) {
+    const title_entry *t = &g_t[i];
+    memset(r, 0, sizeof *r);
+    r->id = t->id;
+    r->version = t->version;
+    r->media = t->media;
+    snprintf(r->name, sizeof r->name, "%s", t->name);
+    snprintf(r->publisher, sizeof r->publisher, "%s", t->publisher);
+    snprintf(r->code, sizeof r->code, "%s", t->code);
+    if (t->icon) { r->has_icon = 1; memcpy(r->icon, t->icon, sizeof r->icon); }
+    fwrite(r, sizeof *r, 1, f);
+  }
+  fclose(f);
+  remove(CACHE_FILE);
+  rename(CACHE_FILE ".tmp", CACHE_FILE);
+  free(r);
+}
+
+/* A title already read in an earlier run (same ID, media and version) needs no SMDH read. */
+static bool from_cache(title_entry *t) {
+  int i;
+  for (i = 0; i < g_ncache; i++) {
+    const cache_rec *c = &g_cache[i];
+    if (c->id != t->id || c->media != t->media || c->version != t->version) continue;
+    if (!c->name[0]) return false;
+    snprintf(t->name, sizeof t->name, "%s", c->name);
+    snprintf(t->publisher, sizeof t->publisher, "%s", c->publisher);
+    snprintf(t->code, sizeof t->code, "%s", c->code);
+    if (c->has_icon) { t->icon = malloc(ICON_UNITS * 2); if (t->icon) memcpy(t->icon, c->icon, ICON_UNITS * 2); }
+    return true;
+  }
+  return false;
+}
+
 static void load_media(FS_MediaType mt) {
   u32 count = 0, got = 0, i;
   u64 *ids;
@@ -146,10 +217,14 @@ static void load_media(FS_MediaType mt) {
         t->version = infos[k].version;
         t->media = (uint8_t)mt;
         t->kind = (uint8_t)classify(t->id, &t->twl);
-        if (mt != MEDIATYPE_GAME_CARD || !t->twl) AM_GetTitleProductCode(mt, t->id, t->code);
-        if (t->twl) read_twl(t);
-        else if (t->kind == KIND_APP || t->kind == KIND_SYSTEM) read_smdh(t);
+        if (!from_cache(t)) {
+          if (mt != MEDIATYPE_GAME_CARD || !t->twl) AM_GetTitleProductCode(mt, t->id, t->code);
+          if (t->twl) read_twl(t);
+          else if (t->kind == KIND_APP || t->kind == KIND_SYSTEM) read_smdh(t);
+        }
         g_nt++;
+        g_prog_done = g_nt;
+        if ((g_nt & 7) == 0) bump();
       }
     }
   }
@@ -176,14 +251,32 @@ static void name_the_rest(void) {
   }
 }
 
+static uint64_t now_ms(void) { return svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000); }
+
 static void job_load(void) {
+  uint64_t t0 = now_ms(), t1, t2;
+  int n_sd, n_nand;
+  u32 c_sd = 0, c_nand = 0;
   free_icons();
   g_nt = 0;
+  g_prog_done = 0;
+  AM_GetTitleCount(MEDIATYPE_SD, &c_sd);
+  AM_GetTitleCount(MEDIATYPE_NAND, &c_nand);
+  g_prog_total = (int)(c_sd + c_nand);
+  cache_load();
   load_media(MEDIATYPE_SD);
+  n_sd = g_nt;
+  t1 = now_ms();
   load_media(MEDIATYPE_NAND);
+  n_nand = g_nt - n_sd;
+  t2 = now_ms();
   load_media(MEDIATYPE_GAME_CARD);
   name_the_rest();
-  alog("Titles: %d listed", g_nt);
+  cache_save();
+  free(g_cache);
+  g_cache = NULL;
+  g_ncache = 0;
+  alog("Titles: %d listed (SD %d in %lu ms, system %d in %lu ms)", g_nt, n_sd, (unsigned long)(t1 - t0), n_nand, (unsigned long)(t2 - t1));
 }
 
 static void pending_media(FS_MediaType mt) {
