@@ -103,6 +103,7 @@ spike/          experimentos descartáveis (plugin 3GX, applet do Notas de jogo)
 ```
 
 ## Limitações conhecidas
+- O 3DS suspende o aplicativo em primeiro plano quando o Menu HOME abre, então o NSD Bridge só responde enquanto está aberto na tela (a página, o `ndev`, o MCP e o instalador dependem disso). O HOME fica desligado durante uma instalação de propósito: o Menu HOME trava junto com o instalador do sistema.
 - O agente é um app em primeiro plano: abrir um jogo o fecha. No 3DS, o Wi-Fi economiza energia quando ocioso, somando ~100–200 ms na primeira ação depois de uma pausa, e criar uma pasta leva ~6 s. No DSi, uma queda de Wi-Fi reconecta sozinha (ou aperte **L** pra escolher a rede na mão); firmware e memória de sistema/app não podem ser reportados (não tem sistema operacional pra perguntar — é homebrew bare-metal).
 - A página web é `http://` puro na sua rede local: autenticada (HMAC por frame) mas **não criptografada**, igual à CLI. As transferências rodam na velocidade do Wi-Fi do console — ~0,6–1 MiB/s no 3DS, ~0,15–0,2 MiB/s no DSi — uma de cada vez.
 - Não testado em Old 3DS, em Windows com console real, ou com outras configurações de firmware. No DSi, validado no TWiLight Menu++ a partir do cartão SD; o carregador próprio de um flashcart R4i Gold falha ao associar no Wi-Fi (acesso ao SD e escaneamento de rede funcionam) tanto num DSi quanto num DS Lite — não testado em outras marcas de flashcart.

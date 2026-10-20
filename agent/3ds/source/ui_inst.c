@@ -198,7 +198,14 @@ static const char *err_text(const ins_status *s) {
     case INS_E_SPACE: return UI_T("Not enough space on the SD card.", "Sem espaço suficiente no cartão SD.");
     case INS_E_SIZE: return UI_T("The size does not match the CIA header: nothing was installed.", "O tamanho não bate com o cabeçalho: nada foi instalado.");
     case INS_E_HASH: return UI_T("The SHA-256 does not match: nothing was installed.", "O SHA-256 não bate: nada foi instalado.");
-    case INS_E_NET: return UI_T("The download failed.", "O download falhou.");
+    case INS_E_NET:
+      if (s->http_code >= 400) snprintf(buf, sizeof buf, "%s %ld.", UI_T("The server answered HTTP", "O servidor respondeu HTTP"), s->http_code);
+      else if (s->net_code == 28) snprintf(buf, sizeof buf, "%s", UI_T("The server did not answer in time (curl 28).", "O servidor não respondeu a tempo (curl 28)."));
+      else if (s->net_code == 6) snprintf(buf, sizeof buf, "%s", UI_T("Could not find the server (curl 6).", "Não encontrou o servidor (curl 6)."));
+      else if (s->net_code == 7) snprintf(buf, sizeof buf, "%s", UI_T("Could not connect to the server (curl 7).", "Não conseguiu conectar ao servidor (curl 7)."));
+      else if (s->net_code == 35 || s->net_code == 51 || s->net_code == 58 || s->net_code == 60) snprintf(buf, sizeof buf, "%s (curl %d).", UI_T("HTTPS / certificate problem", "Problema de HTTPS / certificado"), s->net_code);
+      else snprintf(buf, sizeof buf, "%s (curl %d).", UI_T("The download failed", "O download falhou"), s->net_code);
+      return buf;
     case INS_E_AM: snprintf(buf, sizeof buf, "%s 0x%08lX", UI_T("The system refused the install:", "O sistema recusou a instalação:"), (unsigned long)s->am_result); return buf;
     default: return "";
   }
@@ -238,6 +245,7 @@ void uii_flow_draw(const ui_model *m) {
   ui_rect(0, 0, 400, 24, COL_TOP_HDR);
   ui_text(8, 3, 0.6f, COL_CYAN, 0, "%s", UI_T("Installer", "Instalador"));
   ui_text(392, 5, 0.45f, COL_DIM, UI_RIGHT, "%s", s->is_url ? UI_T("from a URL", "de uma URL") : UI_T("from the SD card", "do cartão SD"));
+  ui_battery(262, 5, m->battery, m->charging);
   if (s->is_url) ui_text(12, y, 0.5f, COL_WHITE, 0, "%.60s", s->host);
   else ui_text(12, y, 0.42f, COL_WHITE, 0, "%.64s", s->source);
   y += 22;
@@ -282,7 +290,7 @@ void uii_flow_draw(const ui_model *m) {
     ui_rect(30, 150, 340.0f * frac, 14, COL_GREEN);
     snprintf(line, sizeof line, "%u%%   %.1f / %.1f MiB   %.2f MiB/s", (unsigned)(frac * 100.0f), (double)s->done / 1048576.0, (double)s->total / 1048576.0, (double)s->bps / 1048576.0);
     ui_text(200, 170, 0.42f, COL_WHITE, UI_CENTER, "%s", line);
-    ui_text(200, 192, 0.4f, COL_YELLOW, UI_CENTER, "%s", UI_T("Do not turn the console off.", "Não desligue o console."));
+    ui_text(200, 192, 0.4f, COL_YELLOW, UI_CENTER, "%s", UI_T("HOME and sleep are off until it finishes.", "HOME e repouso ficam desligados até terminar."));
   } else if (s->state == INS_DONE) {
     ui_text(200, 150, 0.7f, COL_GREEN, UI_CENTER, "%s", UI_T("Installed", "Instalado"));
     ui_text(200, 180, 0.38f, COL_DIM, UI_CENTER, "SHA-256 %.32s...", s->sha_hex);

@@ -259,7 +259,8 @@ static int device_info(void *ctx, ndp_device_info *di) {
 
 /* The page (or ndev) asked to install from a URL. Only taken while the "Receive from the browser" screen is open; the
  * install flow then probes the file and asks the owner to confirm before anything is downloaded. */
-static bool g_is_new3ds = false;
+static bool g_is_new3ds = false, g_charging = false, g_mcu_ok = false, g_ptm_ok = false;
+static int g_battery = -1;
 #ifndef AGENT_TEXT_UI
 static bool g_recv_open = false, g_qr_wanted = false, g_qr_restart = false, g_qr_bad = false, g_qr_inner = false;
 #endif
@@ -635,6 +636,8 @@ static void build_model(ui_model *m, uint64_t now) {
   m->keys_warn = g_keys_dirty_warn;
   m->is_new3ds = g_is_new3ds;
   m->recv_open = g_recv_open;
+  m->battery = g_battery;
+  m->charging = g_charging;
   m->qr_on = qr_active();
   m->qr_inner = qr_active() ? qr_inner() : g_qr_inner;
   m->qr_bad = g_qr_bad;
@@ -659,6 +662,16 @@ static void draw(uint64_t now) {
   ui_draw(&m);
 }
 #endif /* AGENT_TEXT_UI */
+
+/* Battery for the top screen: read every 20 seconds (the services answer quickly, but there is no need to ask more often). */
+static void read_battery(uint64_t now) {
+  static uint64_t next = 0;
+  u8 level = 0, charge = 0;
+  if (now < next) return;
+  next = now + 20000;
+  if (g_mcu_ok && R_SUCCEEDED(MCUHWC_GetBatteryLevel(&level))) g_battery = level > 100 ? 100 : level;
+  if (g_ptm_ok && R_SUCCEEDED(PTMU_GetBatteryChargeState(&charge))) g_charging = charge != 0;
+}
 
 int main(int argc, char **argv) {
   ndp_agent_config cfg;
@@ -692,6 +705,8 @@ int main(int argc, char **argv) {
   alog("cfguInit: %s", g_cfgu_ok ? "ok" : "failed (model falls back to APT)");
   r = ndmuInit();
   alog("ndmuInit: 0x%08lX", (unsigned long)r);
+  g_mcu_ok = R_SUCCEEDED(mcuHwcInit());
+  g_ptm_ok = R_SUCCEEDED(ptmuInit());
 
   memset(&cfg, 0, sizeof cfg);
   cfg.platform = "3ds";
@@ -920,6 +935,7 @@ int main(int argc, char **argv) {
 #endif
     now = now_ms(NULL);
     changed = service_network(now);
+    read_battery(now);
 #ifndef AGENT_TEXT_UI
     {
       /* once per run, a few seconds after the network is up (a file named no-update-check in the config folder turns
@@ -1026,6 +1042,8 @@ quit:
   free(g_soc_buf);
   if (g_ps_ok) psExit();
   if (g_cfgu_ok) cfguExit();
+  if (g_mcu_ok) mcuHwcExit();
+  if (g_ptm_ok) ptmuExit();
   ndmuExit();
   acExit();
   alog_exit();

@@ -103,6 +103,7 @@ spike/          throwaway experiments (3GX plugin, Game Notes applet) — not pa
 ```
 
 ## Known limits
+- The 3DS suspends the foreground app when the HOME Menu opens, so NSD Bridge only answers while it is open on screen (the page, `ndev`, the MCP and the installer all need it that way). HOME is switched off during an install on purpose: the HOME Menu hangs together with the system's installer.
 - The agent is a foreground app: opening a game closes it. On the 3DS, Wi-Fi power-save adds ~100–200 ms after idle and creating a folder takes ~6 s. On the DSi, a dropped Wi-Fi link reconnects on its own (or press **L** to pick a network by hand); no firmware version or system/app memory can be reported (no OS to ask — bare-metal homebrew).
 - The web page is plain `http://` on your LAN: authenticated (per-frame HMAC) but **not encrypted**, like the CLI. Transfers run at the console's Wi-Fi speed — ~0.6–1 MiB/s on the 3DS, ~0.15–0.2 MiB/s on the DSi — one at a time.
 - Not tested on Old 3DS, on Windows with a real console, or with other firmware setups. On the DSi, validated on TWiLight Menu++ from the SD card; an R4i Gold flashcart's own loader fails to associate to Wi-Fi (SD access and the network scan both work) on both a DSi and a DS Lite — untested on other flashcart brands.

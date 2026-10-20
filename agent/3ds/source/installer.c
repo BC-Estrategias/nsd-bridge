@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 
 #include "alog.h"
 #include "ndp/ndp_defs.h"
@@ -33,11 +32,15 @@ static bool cancelled(void) { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE
 
 static void touch(void) { g_st.revision++; }
 static void set_state(ins_state s) { LightLock_Lock(&g_lock); g_st.state = s; touch(); LightLock_Unlock(&g_lock); }
+static int g_net_code;
+static long g_http_code;
 static void fail(ins_error e, uint32_t am) {
   LightLock_Lock(&g_lock);
   g_st.state = INS_ERROR;
   g_st.error = e;
   g_st.am_result = am;
+  g_st.net_code = e == INS_E_NET ? g_net_code : 0;
+  g_st.http_code = e == INS_E_NET ? g_http_code : 0;
   touch();
   LightLock_Unlock(&g_lock);
 }
@@ -284,21 +287,18 @@ static size_t on_body(void *ptr, size_t a, size_t b, void *ud) {
   return n;
 }
 
-/* A bigger TCP receive window for the download (the default is small and caps the speed on Wi-Fi). */
-static int on_sockopt(void *p, curl_socket_t fd, curlsocktype purpose) {
-  int size = 64 * 1024;
-  (void)p; (void)purpose;
-  (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
-  return CURL_SOCKOPT_OK;
-}
-
 static int on_xfer(void *p, curl_off_t a, curl_off_t b, curl_off_t c, curl_off_t d) { (void)p; (void)a; (void)b; (void)c; (void)d; return cancelled() ? 1 : 0; }
 
+/* The transfer is driven with the multi interface and short waits (50 ms): the console's socket service handles one request
+ * at a time, so a long wait inside curl (it waits up to a second when a server is slow) also stalls the bridge and the page. */
 static CURLcode run_curl(const char *url, xfer *x, bool range) {
   CURL *c = curl_easy_init();
+  CURLM *mh = curl_multi_init();
   struct curl_blob ca;
-  CURLcode code;
-  if (!c) return CURLE_FAILED_INIT;
+  CURLcode code = CURLE_FAILED_INIT;
+  int running = 1;
+  long http = 0;
+  if (!c || !mh) { if (c) curl_easy_cleanup(c); if (mh) curl_multi_cleanup(mh); return CURLE_FAILED_INIT; }
   ca.data = (void *)nsd_ca_pem;
   ca.len = (size_t)(nsd_ca_pem_end - nsd_ca_pem);
   ca.flags = CURL_BLOB_NOCOPY;
@@ -318,7 +318,6 @@ static CURLcode run_curl(const char *url, xfer *x, bool range) {
   curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
   curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
-  curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, on_sockopt);
   if (range) curl_easy_setopt(c, CURLOPT_RANGE, "0-16383");
   curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, on_header);
   curl_easy_setopt(c, CURLOPT_HEADERDATA, x);
@@ -326,7 +325,22 @@ static CURLcode run_curl(const char *url, xfer *x, bool range) {
   curl_easy_setopt(c, CURLOPT_WRITEDATA, x);
   curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, on_xfer);
-  code = curl_easy_perform(c);
+  curl_multi_add_handle(mh, c);
+  while (running) {
+    if (curl_multi_perform(mh, &running) != CURLM_OK) break;
+    if (running) curl_multi_poll(mh, NULL, 0, 50, NULL);
+    if (cancelled()) { code = CURLE_ABORTED_BY_CALLBACK; running = -1; break; }
+  }
+  if (running != -1) {
+    CURLMsg *msg;
+    int left;
+    code = CURLE_RECV_ERROR;
+    while ((msg = curl_multi_info_read(mh, &left)) != NULL)
+      if (msg->msg == CURLMSG_DONE) code = msg->data.result;
+  }
+  curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
+  g_net_code = (int)code;
+  g_http_code = http;
   if (!range && code == CURLE_OK) {
     curl_off_t sp = 0;
     double total = 0;
@@ -334,7 +348,9 @@ static CURLcode run_curl(const char *url, xfer *x, bool range) {
     curl_easy_getinfo(c, CURLINFO_TOTAL_TIME, &total);
     alog("Install: download %.2f MiB/s (curl, %.0f s)", (double)sp / 1048576.0, total);
   }
+  curl_multi_remove_handle(mh, c);
   curl_easy_cleanup(c);
+  curl_multi_cleanup(mh);
   return code;
 }
 
@@ -382,7 +398,7 @@ static void install_from_url(void) {
   if (code != CURLE_OK) {
     sink_abort(&k);
     if (cancelled()) fail(INS_E_CANCELLED, 0);
-    else { alog("Install: download failed (curl %d: %s)", (int)code, curl_easy_strerror(code)); fail(INS_E_NET, 0); }
+    else { alog("Install: download failed (curl %d: %s, http %ld)", (int)code, curl_easy_strerror(code), g_http_code); fail(INS_E_NET, 0); }
     return;
   }
   if (!k.opened) { fail(INS_E_NET, 0); return; }
@@ -403,7 +419,7 @@ static void run_job(void *arg) {
     curl_ready = true;
     code = run_curl(g_src, &x, true);
     if (cancelled()) { set_state(INS_IDLE); goto done; }
-    if (x.probe_len < CIA_PROBE_BYTES && code != CURLE_OK) { alog("Install: probe failed (curl %d: %s)", (int)code, curl_easy_strerror(code)); fail(INS_E_NET, 0); goto done; }
+    if (x.probe_len < CIA_PROBE_BYTES && code != CURLE_OK) { alog("Install: probe failed (curl %d: %s, http %ld)", (int)code, curl_easy_strerror(code), g_http_code); fail(INS_E_NET, 0); goto done; }
     if (!judge(probe, x.probe_len, x.total_hint)) goto done;
   } else {
     FILE *f = fopen(g_src, "rb");
@@ -418,8 +434,17 @@ static void run_job(void *arg) {
   }
   wait_answer();
   if (cancelled() || !g_confirmed) { set_state(INS_IDLE); goto done; }
-  if (g_is_url) install_from_url();
-  else install_from_file();
+  {
+    /* While the system's title manager holds the install open, the HOME menu waits for it and the whole console hangs: HOME and
+     * sleep stay off until the install ends (the updater does the same). */
+    bool home = aptIsHomeAllowed(), sleep_ok = aptIsSleepAllowed();
+    aptSetHomeAllowed(false);
+    aptSetSleepAllowed(false);
+    if (g_is_url) install_from_url();
+    else install_from_file();
+    aptSetSleepAllowed(sleep_ok);
+    aptSetHomeAllowed(home);
+  }
 done:
   if (curl_ready) curl_global_cleanup();
   free(probe);

@@ -35,6 +35,8 @@ typedef struct {
   char sha_hex[65];       /* the SHA-256 of what was installed, once it finished */
   ins_error error;
   uint32_t am_result;
+  int net_code;           /* INS_E_NET: the curl result code (28 = timed out...) */
+  long http_code;         /* INS_E_NET: the HTTP status when the server answered with an error */
 } ins_status;
 
 void installer_init(void);

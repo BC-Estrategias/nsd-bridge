@@ -62,6 +62,12 @@ void ui_scene_bottom(uint32_t bg) {
   C2D_TargetClear(g_bot, bg);
   C2D_SceneBegin(g_bot);
 }
+void ui_battery(float x, float y, int percent, bool charging) {
+  if (percent < 0) return;
+  ui_text(x, y, 0.45f, percent < 15 && !charging ? UI_RGB(0xf0, 0x5a, 0x50) : percent < 30 && !charging ? UI_RGB(0xf0, 0xc8, 0x3c) : UI_RGB(0xb8, 0xc0, 0xcc), UI_RIGHT, "%s %d%%%s",
+          UI_T("Battery", "Bateria"), percent, charging ? "+" : "");
+}
+
 void ui_rect(float x, float y, float w, float h, uint32_t color) { C2D_DrawRectSolid(x, y, 0.5f, w, h, color); }
 
 void ui_text(float x, float y, float scale, uint32_t color, int flags, const char *fmt, ...) {
@@ -266,6 +272,7 @@ static void draw_top(const ui_model *m) {
   ui_rect(0, 0, 400, 24, COL_TOP_HDR);
   ui_text(8, 3, 0.6f, COL_CYAN, 0, "NSD Bridge");
   ui_text(392, 5, 0.45f, COL_DIM, UI_RIGHT, "v%s  -  BC Labs", m->version);
+  ui_battery(262, 5, m->battery, m->charging);
 
   ui_text(12, 32, 0.7f, net_col[m->net], 0, "%s", ui_pt() ? net_pt[m->net] : net_en[m->net]);
   if (m->net == 3) {
