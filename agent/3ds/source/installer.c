@@ -337,23 +337,39 @@ static int seed_obtain(u64 title_id, uint8_t seed[16], int *src) {
   if (region > CFG_REGION_TWN) region = CFG_REGION_USA;
   snprintf(url, sizeof url, "https://kagiya-ctr.cdn.nintendo.net/title/0x%016llX/ext_key?country=%s", (unsigned long long)title_id, country[region]);
   if (R_FAILED(rc = httpcInit(0x4000))) { alog("Seed: httpcInit 0x%08lX", (unsigned long)rc); return 3; }
-  if (R_SUCCEEDED(rc = httpcOpenContext(&ctx, HTTPC_METHOD_GET, url, 1))) {
-    if (R_SUCCEEDED(rc = httpcAddRequestHeaderField(&ctx, "User-Agent", "NSD-Bridge/" NDP_AGENT_VERSION)) && R_SUCCEEDED(rc = httpcBeginRequest(&ctx)) &&
-        R_SUCCEEDED(rc = httpcGetResponseStatusCodeTimeout(&ctx, &status, 15ull * 1000000000ull))) {
-      if (status == 200 && R_SUCCEEDED(rc = httpcDownloadData(&ctx, seed, 16, &got)) && got == 16) {
-        result = 1;
-        *src = 3;
-      } else if (status == 404 || status == 403) {
-        result = 2;
+  {
+    /* First with the system's certificate check. Nintendo's seed server uses a certificate from Nintendo's own private
+     * authority; if this console's store does not trust it the request fails before any HTTP status, and it is repeated once
+     * without the check -- for this one fixed host and path only. The seed is not a secret and the worst a forged answer can do
+     * is make a game fail to open; FBI makes the same choice. */
+    int attempt;
+    for (attempt = 0; attempt < 2 && result == 3; attempt++) {
+      status = 0;
+      got = 0;
+      if (R_SUCCEEDED(rc = httpcOpenContext(&ctx, HTTPC_METHOD_GET, url, 1))) {
+        bool ok = (attempt == 0 || R_SUCCEEDED(rc = httpcSetSSLOpt(&ctx, SSLCOPT_DisableVerify))) &&
+                  R_SUCCEEDED(rc = httpcAddRequestHeaderField(&ctx, "User-Agent", "NSD-Bridge/" NDP_AGENT_VERSION)) && R_SUCCEEDED(rc = httpcBeginRequest(&ctx)) &&
+                  R_SUCCEEDED(rc = httpcGetResponseStatusCodeTimeout(&ctx, &status, 15ull * 1000000000ull));
+        if (ok) {
+          if (status == 200 && R_SUCCEEDED(rc = httpcDownloadData(&ctx, seed, 16, &got)) && got == 16) {
+            result = 1;
+            *src = 3;
+            if (attempt) alog("Seed: fetched without the certificate check (the console does not trust Nintendo's seed server certificate)");
+          } else if (status == 404 || status == 403) {
+            result = 2;
+          } else {
+            alog("Seed: the server answered HTTP %lu (download 0x%08lX, %lu bytes)", (unsigned long)status, (unsigned long)rc, (unsigned long)got);
+            attempt = 2; /* a real answer that is not a seed: no point in repeating */
+          }
+        } else {
+          alog("Seed: request %s failed 0x%08lX", attempt ? "(unverified)" : "(verified)", (unsigned long)rc);
+        }
+        httpcCloseContext(&ctx);
       } else {
-        alog("Seed: the server answered HTTP %lu (download 0x%08lX, %lu bytes)", (unsigned long)status, (unsigned long)rc, (unsigned long)got);
+        alog("Seed: httpcOpenContext 0x%08lX", (unsigned long)rc);
+        break;
       }
-    } else {
-      alog("Seed: the request failed 0x%08lX", (unsigned long)rc);
     }
-    httpcCloseContext(&ctx);
-  } else {
-    alog("Seed: httpcOpenContext 0x%08lX", (unsigned long)rc);
   }
   httpcExit();
   return result;
