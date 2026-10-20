@@ -268,7 +268,14 @@ static bool g_qr_resume = false;
 static aptHookCookie g_apt_cookie;
 static void apt_hook(APT_HookType hook, void *param);
 static void power_wake(void);
-static char g_seed_msg[64] = "";
+static char g_seed_msg[64] = "", g_pending_msg[40] = "";
+static void refresh_pending(void) {
+  unsigned n;
+  uint64_t b;
+  installer_pending(&n, &b);
+  if (n) snprintf(g_pending_msg, sizeof g_pending_msg, "%u (%u MiB)", n, (unsigned)(b >> 20));
+  else g_pending_msg[0] = '\0';
+}
 static bool g_recv_open = false, g_qr_wanted = false, g_qr_restart = false, g_qr_bad = false, g_qr_inner = false;
 static void apt_hook(APT_HookType hook, void *param) {
   (void)param;
@@ -712,6 +719,7 @@ static void build_model(ui_model *m, uint64_t now) {
   m->charging = g_charging;
   m->adapter = g_adapter;
   snprintf(m->seed_msg, sizeof m->seed_msg, "%s", g_seed_msg);
+  snprintf(m->pending_msg, sizeof m->pending_msg, "%s", g_pending_msg);
   m->qr_on = qr_active();
   m->qr_inner = qr_active() ? qr_inner() : g_qr_inner;
   m->qr_bad = g_qr_bad;
@@ -880,6 +888,7 @@ int main(int argc, char **argv) {
 #ifndef AGENT_TEXT_UI
   updater_init(argc > 0 ? argv[0] : NULL);
   installer_init();
+  refresh_pending();
 #else
   (void)argc;
   (void)argv;
@@ -1013,6 +1022,7 @@ int main(int argc, char **argv) {
           case UI_INST_QR_ON: g_qr_wanted = true; g_qr_bad = false; g_qr_restart = false; (void)qr_start(g_qr_inner); break;
           case UI_INST_QR_OFF: g_qr_wanted = false; qr_stop(); break;
           case UI_INST_QR_SWITCH: g_qr_inner = !g_qr_inner; qr_stop(); (void)qr_start(g_qr_inner); break;
+          case UI_INST_CLEAN: installer_pending_clear(); refresh_pending(); alog("Cleared the partial downloads"); break;
           case UI_INST_SEEDS: installer_import_seeds(g_seed_msg, sizeof g_seed_msg); alog("Seeds: %s", g_seed_msg); break;
           case UI_INST_YES: installer_confirm(true); break;
           case UI_INST_NO: installer_confirm(false); break;
@@ -1093,7 +1103,7 @@ int main(int argc, char **argv) {
         ins_status is;
         installer_get(&is);
         /* while installing, progress redraws follow the normal throttle: every redraw takes CPU from the download */
-        if (is.revision != last_ins_rev) { last_ins_rev = is.revision; changed = true; if (is.state != INS_INSTALLING) draw_now = true; }
+        if (is.revision != last_ins_rev) { last_ins_rev = is.revision; changed = true; if (is.state != INS_INSTALLING) { draw_now = true; refresh_pending(); } }
       }
     }
 #endif

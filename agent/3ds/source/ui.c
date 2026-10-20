@@ -119,7 +119,7 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 /* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
 enum { IT_UPDATE, IT_FOLDERS, IT_MODE, IT_PAIRING, IT_INSTALLER, IT_LOG, IT_EXIT, IT_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
-enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_SEEDS, SI_COUNT };
+enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_SEEDS, SI_PENDING, SI_COUNT };
 
 int ui_arg(void) { return g_arg; }
 
@@ -181,6 +181,7 @@ static ui_action activate(const ui_model *m) {
       case SI_URL: return UI_INST_TYPE_URL;
       case SI_RECV: go(SCR_RECV); return UI_INST_RECV_ON;
       case SI_QR: go(SCR_QR); return UI_INST_QR_ON;
+      case SI_PENDING: return UI_INST_CLEAN;
       default: return UI_INST_SEEDS;
     }
   }
@@ -414,6 +415,7 @@ static void draw_installer(const ui_model *m) {
   ui_list_row(SI_RECV, g_sel[SCR_INST], 0, UI_T("Receive from the browser", "Receber do navegador"), val, COL_INK);
   ui_list_row(SI_QR, g_sel[SCR_INST], 0, UI_T("Scan a QR code", "Escanear QR Code"), val, COL_INK);
   ui_list_row(SI_SEEDS, g_sel[SCR_INST], 0, UI_T("Register seeds (/fbi/seed)", "Registrar seeds (/fbi/seed)"), m->seed_msg, COL_INK);
+  ui_list_row(SI_PENDING, g_sel[SCR_INST], 0, UI_T("Clear partial downloads", "Limpar downloads parciais"), m->pending_msg, COL_INK);
   ui_text(160, 206, 0.36f, COL_DIM, UI_CENTER, "%s", UI_T("Seeds: the key some newer games need to open.", "Seeds: a chave que alguns jogos mais novos exigem para abrir."));
 }
 

@@ -287,11 +287,17 @@ void uii_flow_draw(const ui_model *m) {
       else if (s->seed_pre == 2) ui_text(12, y, 0.42f, COL_DIM, 0, "%s", UI_T("The server has no seed: this title uses none.", "O servidor não tem seed: este título não usa."));
       else if (s->seed_pre == 3) ui_text(12, y, 0.42f, COL_YELLOW, 0, "%s", UI_T("Could not check the seed now: the game may not open.", "Não consegui checar a seed agora: o jogo pode não abrir."));
       else if (s->seed_pre == 0) ui_text(12, y, 0.42f, COL_DIM, 0, "%s", UI_T("Seed lookup is turned off.", "A busca de seed está desligada."));
+      if (s->resume_bytes) {
+        y += 16;
+        ui_text(12, y, 0.42f, COL_CYAN, 0, "%s %lu MiB", UI_T("Resumes: already on the card:", "Retoma: já está no cartão:"), (unsigned long)(s->resume_bytes >> 20));
+      }
     }
   }
   if (s->state == INS_INSTALLING) {
     float frac = s->total ? (float)((double)s->done / (double)s->total) : 0.0f;
     if (frac > 1.0f) frac = 1.0f;
+    if (s->phase == 1) ui_text(200, 132, 0.45f, COL_CYAN, UI_CENTER, "%s (%d %s)", UI_T("Downloading", "Baixando"), s->conns, UI_T("connections", "conexões"));
+    else if (s->phase == 2) ui_text(200, 132, 0.45f, COL_CYAN, UI_CENTER, "%s", UI_T("Installing from the card", "Instalando a partir do cartão"));
     ui_rect(30, 150, 340, 14, COL_BAR);
     ui_rect(30, 150, 340.0f * frac, 14, COL_GREEN);
     snprintf(line, sizeof line, "%u%%   %.1f / %.1f MiB   %.2f MiB/s", (unsigned)(frac * 100.0f), (double)s->done / 1048576.0, (double)s->total / 1048576.0, (double)s->bps / 1048576.0);
@@ -325,7 +331,7 @@ void uii_flow_draw(const ui_model *m) {
   }
 
   ui_scene_bottom(COL_BOT_BG);
-  ui_bottom_chrome(UI_T("Installer", "Instalador"), s->state == INS_CONFIRM ? UI_T("Install this title?", "Instalar este título?") : s->state == INS_INSTALLING ? UI_T("Installing", "Instalando") : s->state == INS_PROBING ? UI_T("Checking", "Verificando") : s->state == INS_DONE ? UI_T("Done", "Concluído") : UI_T("Failed", "Falhou"),
+  ui_bottom_chrome(UI_T("Installer", "Instalador"), s->state == INS_CONFIRM ? UI_T("Install this title?", "Instalar este título?") : s->state == INS_INSTALLING ? (s->phase == 1 ? UI_T("Downloading", "Baixando") : UI_T("Installing", "Instalando")) : s->state == INS_PROBING ? UI_T("Checking", "Verificando") : s->state == INS_DONE ? UI_T("Done", "Concluído") : UI_T("Failed", "Falhou"),
                    s->state == INS_CONFIRM ? UI_T("A: Install   B: Cancel", "A: Instalar   B: Cancelar") : s->state == INS_INSTALLING || s->state == INS_PROBING ? UI_T("B: Cancel", "B: Cancelar") : UI_T("A / B: OK", "A / B: OK"));
   if (s->state == INS_CONFIRM) {
     button(10, 145, UI_RGB(0x4c, 0xaf, 0x50), UI_T("A: Install", "A: Instalar"));

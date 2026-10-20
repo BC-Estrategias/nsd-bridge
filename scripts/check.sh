@@ -41,6 +41,8 @@ if [ "${1:-}" = "--3ds" ]; then
   if cc -fsanitize=thread -g -pthread -Wno-unused-function -I build -I agent/common/include agent/3ds/tests/installer_pipeline_test.c agent/common/src/ndp_sha256.c -o build/installer_pipeline_test_tsan 2>/dev/null; then
     ./build/installer_pipeline_test_tsan
   fi
+  # which pieces of a download are on the card (pure C)
+  cc -Wall -Wextra -I agent/3ds/source agent/3ds/tests/dlmap_test.c agent/3ds/source/dlmap.c -o build/dlmap_test && ./build/dlmap_test
   # the CIA header parser (pure C)
   cc -Wall -I agent/3ds/source agent/3ds/tests/cia_info_test.c agent/3ds/source/cia_info.c -o build/cia_info_test && ./build/cia_info_test
   # the update-manifest logic is pure C; it needs a host Jansson (e.g. brew/apt libjansson-dev) to run

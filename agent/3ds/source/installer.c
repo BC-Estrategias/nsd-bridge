@@ -11,10 +11,12 @@
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "alog.h"
 #include "ndp/ndp_defs.h"
 #include "ndp/ndp_sha256.h"
+#include "dlmap.h"
 #include "updater.h"
 
 #define OWN_TITLE 0x000400000BD00100ull /* this app: it updates itself through the Updates menu, not through here */
@@ -70,10 +72,12 @@ void installer_get(ins_status *out) {
   LightLock_Unlock(&g_lock);
 }
 bool installer_busy(void) { return __atomic_load_n(&g_busy, __ATOMIC_ACQUIRE); }
+static void dl_sweep(bool all);
 void installer_init(void) {
   if (g_init) return;
   LightLock_Init(&g_lock);
   g_init = true;
+  dl_sweep(false); /* partial downloads older than a week are not coming back */
 }
 
 /* ------------------------------------------------------------------------------------------------ the sink: AM */
@@ -479,6 +483,8 @@ typedef struct {
   sink *k;              /* install mode */
   const cia_info *ci;
   bool failed;
+  bool partial;         /* the server answered 206: it honours Range */
+  char validator[64];   /* ETag (or Last-Modified): tells a resumed download it is still the same file */
 } xfer;
 
 static size_t on_header(char *p, size_t a, size_t b, void *ud) {
@@ -488,6 +494,17 @@ static size_t on_header(char *p, size_t a, size_t b, void *ud) {
   if (n >= sizeof line) return n;
   memcpy(line, p, n);
   line[n] = '\0';
+  if (!strncmp(line, "HTTP/", 5)) {
+    const char *sp = strchr(line, ' ');
+    x->partial = sp && atoi(sp + 1) == 206; /* every redirect brings its own status line: the last one counts */
+  } else if (!strncasecmp(line, "ETag:", 5) || (!strncasecmp(line, "Last-Modified:", 14) && x->validator[0] == '\0')) {
+    const char *v = strchr(line, ':') + 1;
+    size_t e;
+    while (*v == ' ') v++;
+    snprintf(x->validator, sizeof x->validator, "%s", v);
+    e = strlen(x->validator);
+    while (e && (x->validator[e - 1] == '\r' || x->validator[e - 1] == '\n' || x->validator[e - 1] == ' ')) x->validator[--e] = '\0';
+  }
   if (!strncasecmp(line, "Content-Range:", 14)) {
     const char *slash = strchr(line, '/');
     if (slash && slash[1] >= '0' && slash[1] <= '9') x->total_hint = strtoull(slash + 1, NULL, 10);
@@ -580,6 +597,324 @@ static CURLcode run_curl(const char *url, xfer *x, bool range) {
   return code;
 }
 
+
+
+/* ------------------------------------------------------------------------------------- download in pieces, with resume */
+/* A download of a known size from a server that honours Range goes to a file on the card first: 4 connections fetch 1 MiB
+ * pieces, a small map file records which pieces are complete, and the install runs from the file afterwards. If it is
+ * interrupted (network, battery, power) the next attempt for the same URL continues where it stopped; if the server does
+ * not honour Range, the card is too full or anything about the file goes wrong, the old direct streaming is used instead. */
+#define DL_DIR "sdmc:/3ds/nintendo-dev-agent/downloads"
+#define DL_WORKERS 4
+#define DL_TRIES 4
+#define DL_KEEP_DAYS 7
+static bool g_range_ok;
+static char g_validator[64];
+static char g_dl_part[96], g_dl_map[96];
+static dlmap g_map;
+static uint8_t g_tries[DL_MAX_CHUNKS];
+
+static void dl_names(const char *url) {
+  ndp_sha256_ctx c;
+  uint8_t d[32];
+  char hex[17];
+  int i;
+  ndp_sha256_init(&c);
+  ndp_sha256_update(&c, (const uint8_t *)url, strlen(url));
+  ndp_sha256_final(&c, d);
+  for (i = 0; i < 8; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
+  snprintf(g_dl_part, sizeof g_dl_part, DL_DIR "/%s.part", hex);
+  snprintf(g_dl_map, sizeof g_dl_map, DL_DIR "/%s.map", hex);
+  snprintf(g_map.tag, sizeof g_map.tag, "%s|%.60s", hex, g_validator);
+}
+
+static void dl_delete_files(void) { remove(g_dl_part); remove(g_dl_map); }
+
+static void dl_save_map(void) {
+  uint8_t buf[DLMAP_FILE_MAX];
+  size_t n = dlmap_save(&g_map, buf, sizeof buf);
+  FILE *f = n ? fopen(g_dl_map, "wb") : NULL;
+  if (!f) return;
+  fwrite(buf, 1, n, f);
+  fclose(f);
+}
+
+/* Loads what a previous attempt left (only if it is the same file and the data file is long enough). Returns the bytes kept. */
+static uint64_t dl_load(uint64_t total) {
+  uint8_t buf[DLMAP_FILE_MAX];
+  size_t n;
+  struct stat sb;
+  FILE *f;
+  uint32_t i;
+  uint64_t need = 0;
+  char tag[DL_TAG_MAX];
+  snprintf(tag, sizeof tag, "%s", g_map.tag);
+  if (!dlmap_init(&g_map, total, tag)) return 0;
+  f = fopen(g_dl_map, "rb");
+  if (!f) return 0;
+  n = fread(buf, 1, sizeof buf, f);
+  fclose(f);
+  if (!dlmap_load(&g_map, buf, n, total, tag)) return 0;
+  for (i = 0; i < g_map.nchunks; i++) {
+    if (!(g_map.done[i >> 3] & (1u << (i & 7)))) continue;
+    need = dlmap_chunk_off(&g_map, i) + dlmap_chunk_len(&g_map, i);
+  }
+  if (stat(g_dl_part, &sb) != 0 || (uint64_t)sb.st_size < need) { dlmap_init(&g_map, total, tag); return 0; }
+  return dlmap_done_bytes(&g_map);
+}
+
+typedef struct { CURL *c; uint32_t chunk; uint64_t got, len, off; bool active; char range[48]; uint8_t *buf; } dlw; /* buf: the piece, written to the card in one go when complete */
+typedef struct { FILE *f; uint64_t fresh; bool io_error; uint64_t write_ms; } dlctx;
+
+static size_t on_dl_body(void *p, size_t a, size_t b, void *ud) {
+  void **pp = ud;
+  dlw *w = pp[0];
+  dlctx *cx = pp[1];
+  size_t n = a * b;
+  if (cancelled() || w->got + n > w->len) return 0; /* more than the piece: the server ignored the range */
+  memcpy(w->buf + w->got, p, n);
+  w->got += n;
+  cx->fresh += n;
+  return n;
+}
+
+static void dl_setup(dlw *w, const char *url, struct curl_blob *ca, void *cbdata) {
+  curl_easy_setopt(w->c, CURLOPT_URL, url);
+  curl_easy_setopt(w->c, CURLOPT_USERAGENT, "NSD-Bridge/" NDP_AGENT_VERSION);
+  curl_easy_setopt(w->c, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(w->c, CURLOPT_MAXREDIRS, 8L);
+  curl_easy_setopt(w->c, CURLOPT_PROTOCOLS_STR, "http,https");
+  curl_easy_setopt(w->c, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+  curl_easy_setopt(w->c, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_setopt(w->c, CURLOPT_SSL_VERIFYHOST, 2L);
+  curl_easy_setopt(w->c, CURLOPT_CAINFO_BLOB, ca);
+  curl_easy_setopt(w->c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+  curl_easy_setopt(w->c, CURLOPT_FAILONERROR, 1L);
+  curl_easy_setopt(w->c, CURLOPT_CONNECTTIMEOUT, 30L);
+  curl_easy_setopt(w->c, CURLOPT_LOW_SPEED_LIMIT, 128L);
+  curl_easy_setopt(w->c, CURLOPT_LOW_SPEED_TIME, 30L);
+  curl_easy_setopt(w->c, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(w->c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
+  curl_easy_setopt(w->c, CURLOPT_WRITEFUNCTION, on_dl_body);
+  curl_easy_setopt(w->c, CURLOPT_WRITEDATA, cbdata);
+}
+
+enum { DL_OK = 0, DL_NET, DL_CANCEL, DL_IO, DL_NORANGE };
+
+/* Fetches every missing piece into `f`. Keeps g_map and the map file up to date. */
+static int dl_run(const char *url, FILE *f, uint64_t base) {
+  CURLM *mh = curl_multi_init();
+  dlw w[DL_WORKERS];
+  void *cb[DL_WORKERS][2];
+  dlctx cx = {f, 0, false, 0};
+  uint64_t t_start = now_ms();
+  struct curl_blob ca;
+  int i, active = 0, result = DL_OK, running = 0;
+  uint64_t last_t = now_ms(), last_bytes = 0, last_save = now_ms();
+  double ema = 0;
+  unsigned bps = 0, eta = 0;
+  memset(w, 0, sizeof w);
+  memset(g_tries, 0, sizeof g_tries);
+  if (!mh) return DL_NET;
+  ca.data = (void *)nsd_ca_pem;
+  ca.len = (size_t)(nsd_ca_pem_end - nsd_ca_pem);
+  ca.flags = CURL_BLOB_NOCOPY;
+  for (i = 0; i < DL_WORKERS; i++) {
+    w[i].c = curl_easy_init();
+    w[i].buf = malloc(DL_CHUNK);
+    cb[i][0] = &w[i];
+    if (!w[i].buf) { result = DL_IO; goto out; }
+    cb[i][1] = &cx;
+    if (!w[i].c) { result = DL_NET; goto out; }
+    dl_setup(&w[i], url, &ca, cb[i]);
+  }
+  for (i = 0; i < DL_WORKERS; i++) {
+    uint32_t idx;
+    if (!dlmap_claim(&g_map, &idx)) break;
+    w[i].chunk = idx;
+    w[i].off = dlmap_chunk_off(&g_map, idx);
+    w[i].len = dlmap_chunk_len(&g_map, idx);
+    w[i].got = 0;
+    snprintf(w[i].range, sizeof w[i].range, "%llu-%llu", (unsigned long long)w[i].off, (unsigned long long)(w[i].off + w[i].len - 1));
+    curl_easy_setopt(w[i].c, CURLOPT_RANGE, w[i].range);
+    curl_multi_add_handle(mh, w[i].c);
+    w[i].active = true;
+    active++;
+  }
+  LightLock_Lock(&g_lock);
+  g_st.conns = active;
+  touch();
+  LightLock_Unlock(&g_lock);
+  while (active > 0 && result == DL_OK) {
+    CURLMsg *msg;
+    int left;
+    uint64_t t;
+    if (curl_multi_perform(mh, &running) != CURLM_OK) { result = DL_NET; break; }
+    if (running) curl_multi_poll(mh, NULL, 0, 50, NULL);
+    if (cancelled()) { result = DL_CANCEL; break; }
+    if (cx.io_error) { result = DL_IO; break; }
+    while ((msg = curl_multi_info_read(mh, &left)) != NULL) {
+      dlw *d = NULL;
+      long http = 0;
+      CURLcode rc;
+      if (msg->msg != CURLMSG_DONE) continue;
+      for (i = 0; i < DL_WORKERS; i++) if (w[i].active && w[i].c == msg->easy_handle) d = &w[i];
+      if (!d) continue;
+      rc = msg->data.result;
+      curl_easy_getinfo(d->c, CURLINFO_RESPONSE_CODE, &http);
+      curl_multi_remove_handle(mh, d->c);
+      d->active = false;
+      active--;
+      if (rc == CURLE_OK && d->got == d->len && http == 206) {
+        uint64_t t0 = now_ms();
+        bool bad = fseeko(cx.f, (off_t)d->off, SEEK_SET) != 0 || fwrite(d->buf, 1, (size_t)d->len, cx.f) != (size_t)d->len || fflush(cx.f) != 0;
+        cx.write_ms += now_ms() - t0;
+        if (bad) { result = DL_IO; break; }
+        dlmap_complete(&g_map, d->chunk);
+        if (now_ms() - last_save >= 2000) { dl_save_map(); last_save = now_ms(); }
+      } else {
+        cx.fresh -= d->got; /* the piece will be fetched again from its start */
+        dlmap_release(&g_map, d->chunk);
+        g_net_code = (int)rc;
+        g_http_code = http;
+        if (cx.io_error) { result = DL_IO; break; }
+        if (http == 200) { result = DL_NORANGE; break; }
+        if (cancelled()) { result = DL_CANCEL; break; }
+        alog("Download: piece %lu failed (curl %d, HTTP %ld), try %d", (unsigned long)d->chunk, (int)rc, http, g_tries[d->chunk] + 1);
+        if (++g_tries[d->chunk] >= DL_TRIES) { result = DL_NET; break; }
+      }
+      {
+        uint32_t idx;
+        if (dlmap_claim(&g_map, &idx)) {
+          d->chunk = idx;
+          d->off = dlmap_chunk_off(&g_map, idx);
+          d->len = dlmap_chunk_len(&g_map, idx);
+          d->got = 0;
+          snprintf(d->range, sizeof d->range, "%llu-%llu", (unsigned long long)d->off, (unsigned long long)(d->off + d->len - 1));
+          curl_easy_setopt(d->c, CURLOPT_RANGE, d->range);
+          curl_multi_add_handle(mh, d->c);
+          d->active = true;
+          active++;
+        }
+      }
+    }
+    t = now_ms();
+    if (t - last_t >= 1000) {
+      double inst = (double)(cx.fresh - last_bytes) * 1000.0 / (double)(t - last_t);
+      bps = (unsigned)inst;
+      ema = ema > 0 ? 0.8 * ema + 0.2 * inst : inst;
+      eta = ema > 1.0 && g_map.total > base + cx.fresh ? (unsigned)((double)(g_map.total - base - cx.fresh) / ema) : 0;
+      last_t = t;
+      last_bytes = cx.fresh;
+    }
+    progress(base + cx.fresh > g_map.total ? g_map.total : base + cx.fresh, g_map.total, bps, eta);
+  }
+out:
+  for (i = 0; i < DL_WORKERS; i++) {
+    if (w[i].c) { if (w[i].active) curl_multi_remove_handle(mh, w[i].c); curl_easy_cleanup(w[i].c); }
+    free(w[i].buf);
+  }
+  curl_multi_cleanup(mh);
+  fflush(cx.f);
+  alog("Download: %llu KiB in %lu s, %lu s of it writing to the card", (unsigned long long)(cx.fresh >> 10), (unsigned long)((now_ms() - t_start) / 1000), (unsigned long)(cx.write_ms / 1000));
+  if (result == DL_OK && !dlmap_finished(&g_map)) result = DL_NET;
+  dl_save_map();
+  return result;
+}
+
+static bool user_cancelled(void) { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE); }
+static void install_from_file(const char *path);
+
+/* The whole piecewise path. Returns true when it handled the install (done or failed), false to use direct streaming. */
+static bool download_and_install(void) {
+  ins_status st;
+  uint64_t total, kept, free_bytes = 0, need;
+  FILE *f;
+  FS_ArchiveResource r;
+  struct stat sb;
+  int rc;
+  installer_get(&st);
+  total = st.info.total_size;
+  if (!g_range_ok) { alog("Download: the server does not honour Range: streaming"); return false; }
+  if (total == 0 || total > (uint64_t)DL_MAX_CHUNKS * DL_CHUNK) { alog("Download: too large for pieces: streaming"); return false; }
+  mkdir("sdmc:/3ds", 0777);
+  mkdir("sdmc:/3ds/nintendo-dev-agent", 0777);
+  mkdir(DL_DIR, 0777);
+  dl_names(g_src);
+  kept = dl_load(total);
+  if (R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&r))) free_bytes = (uint64_t)r.freeClusters * r.clusterSize;
+  need = (total - kept) + (st.info.on_nand ? 0 : total) + SPACE_MARGIN; /* the file, plus the installed copy when it goes to the card */
+  if (free_bytes < need) { alog("Download: not enough room for the file plus the install (%llu MiB free): streaming", (unsigned long long)(free_bytes >> 20)); return false; }
+  f = fopen(g_dl_part, stat(g_dl_part, &sb) == 0 ? "r+b" : "w+b");
+  if (!f) { alog("Download: cannot create the file: streaming"); return false; }
+  alog("Download: %llu pieces, %llu MiB already there, %d connections", (unsigned long long)g_map.nchunks, (unsigned long long)(kept >> 20), DL_WORKERS);
+  LightLock_Lock(&g_lock);
+  g_st.phase = 1;
+  g_st.done = kept;
+  g_st.total = total;
+  g_st.state = INS_INSTALLING;
+  touch();
+  LightLock_Unlock(&g_lock);
+  g_start_ms = now_ms();
+  rc = dl_run(g_src, f, kept);
+  fclose(f);
+  if (rc == DL_NORANGE || rc == DL_IO) { alog("Download: %s: streaming", rc == DL_IO ? "cannot write the file" : "the server ignored Range"); dl_delete_files(); return false; }
+  if (rc == DL_CANCEL) {
+    if (user_cancelled()) dl_delete_files(); /* a cancel throws the pieces away; closing the app keeps them for a resume */
+    fail(INS_E_CANCELLED, 0);
+    return true;
+  }
+  if (rc == DL_NET) { alog("Download: interrupted (curl %d, HTTP %ld); the %llu MiB received are kept", g_net_code, g_http_code, (unsigned long long)(dlmap_done_bytes(&g_map) >> 20)); fail(INS_E_NET, 0); return true; }
+  alog("Download: complete in %lu s", (unsigned long)((now_ms() - g_start_ms) / 1000));
+  LightLock_Lock(&g_lock);
+  g_st.phase = 2;
+  g_st.done = 0;
+  touch();
+  LightLock_Unlock(&g_lock);
+  install_from_file(g_dl_part);
+  installer_get(&st);
+  /* the data is only worth keeping if it is good: a bad checksum or size means the file itself is wrong */
+  if (st.state == INS_DONE || (st.state == INS_ERROR && (st.error == INS_E_HASH || st.error == INS_E_SIZE || st.error == INS_E_CANCELLED))) {
+    if (!(st.state == INS_ERROR && st.error == INS_E_CANCELLED && !user_cancelled())) dl_delete_files();
+  }
+  return true;
+}
+
+/* Partial downloads on the card: counted for the menu, cleared on request, and anything older than a week is removed. */
+void installer_pending(unsigned *count, uint64_t *bytes) {
+  DIR *d = opendir(DL_DIR);
+  struct dirent *e;
+  *count = 0;
+  *bytes = 0;
+  if (!d) return;
+  while ((e = readdir(d)) != NULL) {
+    size_t n = strlen(e->d_name);
+    char path[160];
+    struct stat sb;
+    if (n < 6 || strcmp(e->d_name + n - 5, ".part") != 0) continue;
+    snprintf(path, sizeof path, DL_DIR "/%s", e->d_name);
+    if (stat(path, &sb) == 0) { (*count)++; *bytes += (uint64_t)sb.st_size; }
+  }
+  closedir(d);
+}
+static void dl_sweep(bool all) {
+  DIR *d = opendir(DL_DIR);
+  struct dirent *e;
+  time_t now = time(NULL);
+  if (!d) return;
+  while ((e = readdir(d)) != NULL) {
+    size_t n = strlen(e->d_name);
+    char path[160];
+    struct stat sb;
+    bool mine = n > 4 && (strcmp(e->d_name + n - 5, ".part") == 0 || strcmp(e->d_name + n - 4, ".map") == 0);
+    if (!mine) continue; /* only files this feature wrote */
+    snprintf(path, sizeof path, DL_DIR "/%s", e->d_name);
+    if (stat(path, &sb) != 0) continue;
+    if (all || (now > sb.st_mtime && (now - sb.st_mtime) > (time_t)DL_KEEP_DAYS * 86400)) remove(path);
+  }
+  closedir(d);
+}
+void installer_pending_clear(void) { dl_sweep(true); }
 
 /* ------------------------------------------------------------------------------------------------ speed test */
 /* A URL ending in "#speedtest" does not install anything: it downloads a few MB with each of four variations of the network
@@ -720,7 +1055,7 @@ static void wait_answer(void) {
   while (!g_answered && !cancelled()) svcSleepThread(50 * 1000000LL);
 }
 
-static void install_from_file(void) {
+static void install_from_file(const char *path) {
   sink k;
   FILE *f;
   uint8_t *buf = malloc(IO_SIZE);
@@ -728,7 +1063,7 @@ static void install_from_file(void) {
   size_t n;
   memset(&k, 0, sizeof k);
   installer_get(&st);
-  f = buf ? fopen(g_src, "rb") : NULL;
+  f = buf ? fopen(path, "rb") : NULL;
   if (!f) { free(buf); fail(INS_E_READ, 0); return; }
   set_state(INS_INSTALLING);
   alog("Install: starting from the SD card%s", st.replaces ? " (the installed copy is removed first)" : "");
@@ -782,7 +1117,18 @@ static void run_job(void *arg) {
     code = run_curl(g_src, &x, true);
     if (cancelled()) { set_state(INS_IDLE); goto done; }
     if (x.probe_len < CIA_PROBE_BYTES && code != CURLE_OK) { alog("Install: probe failed (curl %d: %s, http %ld)", (int)code, curl_easy_strerror(code), g_http_code); fail(INS_E_NET, 0); goto done; }
+    g_range_ok = x.partial;
+    snprintf(g_validator, sizeof g_validator, "%s", x.validator);
     if (!judge(probe, x.probe_len, x.total_hint)) goto done;
+    if (g_range_ok && x.total_hint > 0 && x.total_hint <= (uint64_t)DL_MAX_CHUNKS * DL_CHUNK) { /* what an earlier attempt left on the card */
+      uint64_t kept;
+      dl_names(g_src);
+      kept = dl_load(x.total_hint);
+      LightLock_Lock(&g_lock);
+      g_st.resume_bytes = kept;
+      touch();
+      LightLock_Unlock(&g_lock);
+    }
   } else {
     FILE *f = fopen(g_src, "rb");
     size_t n;
@@ -802,8 +1148,8 @@ static void run_job(void *arg) {
     bool home = aptIsHomeAllowed(), sleep_ok = aptIsSleepAllowed();
     aptSetHomeAllowed(false);
     aptSetSleepAllowed(false);
-    if (g_is_url) install_from_url();
-    else install_from_file();
+    if (g_is_url) { if (!download_and_install()) install_from_url(); }
+    else install_from_file(g_src);
     aptSetSleepAllowed(sleep_ok);
     aptSetHomeAllowed(home);
   }

@@ -34,6 +34,9 @@ typedef struct {
   unsigned bps;
   unsigned eta_s;         /* estimated seconds left (smoothed), 0 = not known yet */
   int is_bench;           /* a speed test, not an install */
+  int phase;              /* 0 streamed straight into the installer, 1 downloading to a file on the card, 2 installing from that file */
+  uint64_t resume_bytes;  /* confirm screen: how much of this download is already on the card from before */
+  int conns;              /* connections used by the download (phase 1) */
   unsigned bench_kib[4];  /* KiB/s of: easy, multi (50 ms), easy + big TCP window, multi + big TCP window; 0 = failed */
   int seed_pre;           /* checked before the download: -1 not applicable, 0 off, 1 available, 2 the title uses none, 3 could not be checked */
   int seed_src;           /* with seed_pre == 1: 1 the request, 2 /fbi/seed, 3 Nintendo's server */
@@ -56,6 +59,8 @@ bool installer_start_url(const char *url, const uint8_t *sha256, const uint8_t *
 void installer_confirm(bool yes);   /* answer to INS_CONFIRM */
 void installer_cancel(void);        /* stop an install in progress */
 void installer_dismiss(void);       /* leave INS_DONE / INS_ERROR: back to INS_IDLE */
-void installer_import_seeds(char *msg, size_t cap);  /* register the .dat files of /fbi/seed; msg gets "N registered, M failed" */
+void installer_import_seeds(char *msg, size_t cap);
+void installer_pending(unsigned *count, uint64_t *bytes);  /* partial downloads kept on the card (for resuming) */
+void installer_pending_clear(void);                       /* delete them all */  /* register the .dat files of /fbi/seed; msg gets "N registered, M failed" */
 
 #endif
