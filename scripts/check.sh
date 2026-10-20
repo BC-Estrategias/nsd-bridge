@@ -32,6 +32,17 @@ echo "==> TypeScript bridge"
 if [ "${1:-}" = "--3ds" ]; then
   echo "==> 3DS build"
   ./scripts/build-3ds.sh
+  # the installer's write pipeline (threads and a bounded queue) is the kind of code that deadlocks in subtle ways: its real
+  # source runs here against a mock of the 3DS services, with slow/failing writes and aborts, and under ThreadSanitizer
+  mkdir -p build
+  awk '/^#define BLOCK/{p=1} /^\/\* -+ probing/{p=0} p' agent/3ds/source/installer.c > build/pipeline_section.inc
+  cc -O1 -g -pthread -Wno-unused-function -I build -I agent/common/include agent/3ds/tests/installer_pipeline_test.c agent/common/src/ndp_sha256.c -o build/installer_pipeline_test
+  ./build/installer_pipeline_test
+  if cc -fsanitize=thread -g -pthread -Wno-unused-function -I build -I agent/common/include agent/3ds/tests/installer_pipeline_test.c agent/common/src/ndp_sha256.c -o build/installer_pipeline_test_tsan 2>/dev/null; then
+    ./build/installer_pipeline_test_tsan
+  fi
+  # the CIA header parser (pure C)
+  cc -Wall -I agent/3ds/source agent/3ds/tests/cia_info_test.c agent/3ds/source/cia_info.c -o build/cia_info_test && ./build/cia_info_test
   # the update-manifest logic is pure C; it needs a host Jansson (e.g. brew/apt libjansson-dev) to run
   if cc -I agent/3ds/source agent/3ds/tests/update_manifest_test.c agent/3ds/source/update_manifest.c -ljansson -o build/update_manifest_test 2>/dev/null; then
     ./build/update_manifest_test

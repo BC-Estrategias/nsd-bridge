@@ -73,89 +73,171 @@ void installer_init(void) {
 
 /* ------------------------------------------------------------------------------------------------ the sink: AM */
 #define BLOCK (128u * 1024u)
+#define FLAG_GET(f) __atomic_load_n(&(f), __ATOMIC_ACQUIRE)
+#define FLAG_SET(f) __atomic_store_n(&(f), true, __ATOMIC_RELEASE)
+#define SLOTS 4 /* 4 x 128 KiB in flight: the network keeps reading while the system's title manager is writing */
 
+/* The install is a small pipeline: whoever has the data (the download callback, or the loop reading a file) fills a slot and
+ * hands it over; a writer thread feeds the slots, in order, to AM and to the SHA-256. Before, one thread did both in turn, so
+ * the socket was not read during every AM write, the TCP window closed and the sender waited. */
 typedef struct {
   Handle am;
   bool opened;
-  uint64_t off;       /* bytes written to AM */
-  uint64_t in;        /* bytes received (written + still in `blk`) */
-  uint8_t *blk;       /* AM gets whole 128 KiB blocks, like FBI does: a download hands over 16 KiB pieces */
-  size_t fill;
   FS_MediaType dest;
   ndp_sha256_ctx sha;
+  uint8_t *slot[SLOTS];
+  size_t len[SLOTS];          /* bytes in the slot; 0 on the last "slot" = end marker */
+  unsigned head, tail;        /* producer slot / writer slot */
+  size_t fill;                /* bytes in the producer's current slot */
+  LightSemaphore free_slots, full_slots;
+  Thread writer;
+  bool failed, stop; /* only through the macros below: one thread writes, the other reads */
+  uint64_t in;                /* bytes handed over (producer) */
+  uint64_t off;               /* bytes written to AM (writer) */
+  uint64_t wait_prod_ms, wait_writer_ms; /* diagnostics: who waited for whom */
   uint64_t last_ms, last_off;
   unsigned bps;
+  uint64_t total;
   uint32_t res;
 } sink;
 
 static uint64_t now_ms(void) { return svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000); }
 static uint64_t g_am_ms, g_start_ms; /* time spent inside AM writes / since the install started (diagnostics) */
 
+static void sink_release(sink *k);
+
+static void writer_thread(void *arg) {
+  sink *k = arg;
+  for (;;) {
+    uint64_t t0 = now_ms();
+    size_t n;
+    LightSemaphore_Acquire(&k->full_slots, 1);
+    k->wait_writer_ms += now_ms() - t0;
+    n = k->len[k->tail];
+    if (n == 0 || FLAG_GET(k->stop)) break;
+    if (!FLAG_GET(k->failed)) {
+      u32 wrote = 0;
+      uint64_t w0 = now_ms(), t;
+      Result rc = FSFILE_Write(k->am, &wrote, k->off, k->slot[k->tail], (u32)n, 0);
+      g_am_ms += now_ms() - w0;
+      if (R_FAILED(rc) || wrote != n) {
+        k->res = (uint32_t)rc;
+        FLAG_SET(k->failed);
+        alog("Install: AM write failed at byte %llu: 0x%08lX (wrote %lu of %lu)", (unsigned long long)k->off, (unsigned long)rc, (unsigned long)wrote, (unsigned long)n);
+      } else {
+        ndp_sha256_update(&k->sha, k->slot[k->tail], n);
+        k->off += n;
+        t = now_ms();
+        if (t - k->last_ms >= 1000) {
+          k->bps = (unsigned)((k->off - k->last_off) * 1000 / (t - k->last_ms));
+          k->last_ms = t;
+          k->last_off = k->off;
+        }
+        progress(k->off, k->total, k->bps);
+      }
+    }
+    k->tail = (k->tail + 1) % SLOTS;
+    LightSemaphore_Release(&k->free_slots, 1); /* after a failure the slots are still freed, so the producer never blocks forever */
+  }
+}
+
 static bool sink_open(sink *k, const cia_info *ci, int replaces) {
   Result rc;
+  int i;
+  s32 prio = 0x30;
   k->dest = ci->on_nand ? MEDIATYPE_NAND : MEDIATYPE_SD;
+  k->total = ci->total_size;
   ndp_sha256_init(&k->sha);
+  for (i = 0; i < SLOTS; i++) {
+    k->slot[i] = malloc(BLOCK);
+    if (!k->slot[i]) { sink_release(k); k->res = 0xE0E01BF8u; alog("Install: no memory for the write buffers"); return false; }
+  }
   if (replaces) { /* the same way FBI reinstalls: the installed copy goes first, so the same or an older version can be installed */
     AM_DeleteTitle(k->dest, ci->title_id);
     AM_DeleteTicket(ci->title_id);
     if (k->dest == MEDIATYPE_SD) AM_QueryAvailableExternalTitleDatabase(NULL);
   }
   rc = AM_StartCiaInstall(k->dest, &k->am);
-  if (R_FAILED(rc)) { k->res = (uint32_t)rc; alog("Install: AM_StartCiaInstall failed 0x%08lX (%s)", (unsigned long)rc, k->dest == MEDIATYPE_NAND ? "NAND" : "SD"); return false; }
+  if (R_FAILED(rc)) {
+    k->res = (uint32_t)rc;
+    alog("Install: AM_StartCiaInstall failed 0x%08lX (%s)", (unsigned long)rc, k->dest == MEDIATYPE_NAND ? "NAND" : "SD");
+    sink_release(k);
+    return false;
+  }
   g_am_ms = 0;
   g_start_ms = now_ms();
-  k->blk = malloc(BLOCK);
-  if (!k->blk) { AM_CancelCIAInstall(k->am); k->res = 0xE0E01BF8u; alog("Install: no memory for the write buffer"); return false; }
-  k->opened = true;
+  LightSemaphore_Init(&k->free_slots, SLOTS - 1, SLOTS); /* slot 0 is the producer's from the start */
+  LightSemaphore_Init(&k->full_slots, 0, SLOTS + 1);
+  k->head = k->tail = 0;
+  k->fill = 0;
   k->last_ms = now_ms();
+  k->opened = true;
+  svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+  k->writer = threadCreate(writer_thread, k, 32 * 1024, prio, -1, false);
+  if (!k->writer) {
+    AM_CancelCIAInstall(k->am);
+    k->opened = false;
+    k->res = 0xE0E01BF8u;
+    sink_release(k);
+    alog("Install: cannot start the writer thread");
+    return false;
+  }
   return true;
 }
 
-static bool am_write(sink *k, const uint8_t *p, size_t n) {
-  u32 wrote = 0;
-  uint64_t t0 = now_ms();
-  Result rc = FSFILE_Write(k->am, &wrote, k->off, p, (u32)n, 0);
-  g_am_ms += now_ms() - t0;
-  if (R_FAILED(rc) || wrote != n) {
-    k->res = (uint32_t)rc;
-    alog("Install: AM write failed at byte %llu: 0x%08lX (wrote %lu of %lu)", (unsigned long long)k->off, (unsigned long)rc, (unsigned long)wrote, (unsigned long)n);
-    return false;
-  }
-  k->off += n;
-  return true;
+/* Hands the producer's slot to the writer and takes the next free one (waits if the writer is behind). */
+static bool slot_handoff(sink *k, size_t n) {
+  uint64_t t0;
+  k->len[k->head] = n;
+  k->head = (k->head + 1) % SLOTS;
+  LightSemaphore_Release(&k->full_slots, 1);
+  t0 = now_ms();
+  LightSemaphore_Acquire(&k->free_slots, 1);
+  k->wait_prod_ms += now_ms() - t0;
+  return !FLAG_GET(k->failed);
 }
 
 static bool sink_write(sink *k, const uint8_t *buf, size_t len, uint64_t total) {
-  uint64_t t;
-  ndp_sha256_update(&k->sha, buf, len);
+  (void)total;
   k->in += len;
   while (len) {
     size_t take = BLOCK - k->fill;
+    if (FLAG_GET(k->failed)) return false;
     if (take > len) take = len;
-    memcpy(k->blk + k->fill, buf, take);
+    memcpy(k->slot[k->head] + k->fill, buf, take);
     k->fill += take;
     buf += take;
     len -= take;
     if (k->fill == BLOCK) {
-      if (!am_write(k, k->blk, BLOCK)) return false;
       k->fill = 0;
+      if (!slot_handoff(k, BLOCK)) return false;
     }
   }
-  t = now_ms();
-  if (t - k->last_ms >= 1000) {
-    k->bps = (unsigned)((k->in - k->last_off) * 1000 / (t - k->last_ms));
-    k->last_ms = t;
-    k->last_off = k->in;
-  }
-  progress(k->in, total, k->bps);
-  return true;
+  return !FLAG_GET(k->failed);
+}
+
+static void sink_release(sink *k) {
+  int i;
+  for (i = 0; i < SLOTS; i++) { free(k->slot[i]); k->slot[i] = NULL; }
+}
+
+/* Stops the writer (after it drains what was handed over, unless `drop`), and waits for it. */
+static void writer_end(sink *k, bool drop) {
+  if (!k->writer) return;
+  if (drop) FLAG_SET(k->stop);
+  if (!drop && k->fill) { (void)slot_handoff(k, k->fill); k->fill = 0; }
+  k->len[k->head] = 0; /* the end marker goes in the slot the producer holds */
+  LightSemaphore_Release(&k->full_slots, 1);
+  threadJoin(k->writer, UINT64_MAX);
+  threadFree(k->writer);
+  k->writer = NULL;
 }
 
 static void sink_abort(sink *k) {
+  writer_end(k, true);
   if (k->opened) AM_CancelCIAInstall(k->am);
   k->opened = false;
-  free(k->blk);
-  k->blk = NULL;
+  sink_release(k);
 }
 
 static void hex32(const uint8_t d[32], char out[65]) {
@@ -167,23 +249,24 @@ static void hex32(const uint8_t d[32], char out[65]) {
 static bool sink_finish(sink *k, const cia_info *ci) {
   uint8_t digest[32];
   Result rc;
-  if (k->fill && !am_write(k, k->blk, k->fill)) { sink_abort(k); fail(INS_E_AM, k->res); return false; }
-  k->fill = 0;
+  if (FLAG_GET(k->failed)) { sink_abort(k); fail(INS_E_AM, k->res); return false; }
+  if (k->in != ci->total_size) { alog("Install: received %llu bytes, the header says %llu", (unsigned long long)k->in, (unsigned long long)ci->total_size); sink_abort(k); fail(INS_E_SIZE, 0); return false; }
+  writer_end(k, false);
+  if (FLAG_GET(k->failed)) { sink_abort(k); fail(INS_E_AM, k->res); return false; }
   ndp_sha256_final(&k->sha, digest);
   LightLock_Lock(&g_lock);
   hex32(digest, g_st.sha_hex);
   LightLock_Unlock(&g_lock);
-  if (k->in != ci->total_size) { alog("Install: received %llu bytes, the header says %llu", (unsigned long long)k->in, (unsigned long long)ci->total_size); sink_abort(k); fail(INS_E_SIZE, 0); return false; }
   if (g_have_expect && memcmp(digest, g_expect, 32) != 0) { sink_abort(k); fail(INS_E_HASH, 0); return false; }
   rc = AM_FinishCiaInstall(k->am);
   k->opened = false;
   {
     uint64_t el = now_ms() - g_start_ms;
-    alog("Install: finish 0x%08lX, %llu bytes in %lu s (%.2f MiB/s; %lu s of it inside AM writes), sha256 %.16s...", (unsigned long)rc, (unsigned long long)k->in,
-         (unsigned long)(el / 1000), el ? (double)k->in / 1048576.0 / ((double)el / 1000.0) : 0.0, (unsigned long)(g_am_ms / 1000), g_st.sha_hex);
+    alog("Install: finish 0x%08lX, %llu bytes in %lu s (%.2f MiB/s); inside AM writes %lu s; the network waited %lu s for the writer, the writer %lu s for data; sha256 %.16s...",
+         (unsigned long)rc, (unsigned long long)k->in, (unsigned long)(el / 1000), el ? (double)k->in / 1048576.0 / ((double)el / 1000.0) : 0.0,
+         (unsigned long)(g_am_ms / 1000), (unsigned long)(k->wait_prod_ms / 1000), (unsigned long)(k->wait_writer_ms / 1000), g_st.sha_hex);
   }
-  free(k->blk);
-  k->blk = NULL;
+  sink_release(k);
   if (R_FAILED(rc)) { fail(INS_E_AM, (uint32_t)rc); return false; }
   if (k->dest == MEDIATYPE_SD) AM_QueryAvailableExternalTitleDatabase(NULL);
   return true;
