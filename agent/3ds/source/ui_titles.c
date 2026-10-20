@@ -28,7 +28,7 @@ static const char *filter_name(void) {
     case 2: return "DSiWare";
     case 3: return "Apps";
     case 4: return UI_T("System", "Sistema");
-    default: return UI_T("All", "Todos");
+    default: return UI_T("All (no system)", "Todos (sem sistema)");
   }
 }
 static const char *sort_name(void) { return sortk == 0 ? UI_T("by name", "por nome") : sortk == 1 ? UI_T("by size", "por tamanho") : UI_T("by ID", "por ID"); }
@@ -52,7 +52,7 @@ static bool in_filter(const title_entry *t) {
     case 2: return t->kind == KIND_DSIWARE;
     case 3: return t->kind == KIND_APP && !is_game(t);
     case 4: return t->kind == KIND_SYSTEM;
-    default: return true;
+    default: return t->kind != KIND_SYSTEM; /* system titles (internal modules and apps) only show under "System" */
   }
 }
 
