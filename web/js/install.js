@@ -26,6 +26,17 @@
     return out;
   }
 
+  /** The optional SHA-256 field: "" -> null, 64 hex digits (spaces/dashes allowed) -> 32 bytes, else false. */
+  function parseSha(v) {
+    const t = String(v || "").replace(/[\s-]/g, "");
+    if (!t) return null;
+    if (!/^[0-9a-fA-F]{64}$/.test(t)) return false;
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) out[i] = parseInt(t.slice(2 * i, 2 * i + 2), 16);
+    return out;
+  }
+  const hexOf = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
   function errText(e) {
     if (e && e.statusName && NDP.i18n.has("err." + e.statusName)) return t("err." + e.statusName);
     return (e && (e.detail || e.message)) || String(e);
@@ -49,7 +60,7 @@
     }
   }
 
-  async function uploadAndSend(file, seed) {
+  async function uploadAndSend(file, seed, expected) {
     if (S.info && S.info.mode === "READ_ONLY") { toast(t("readOnlyBanner"), "error", 7000); return; }
     if (U.accessOf(DIR + "/x", S.access, S.info && S.info.mode, S.info && S.info.platform) !== "write") { toast(t("notWritableHere"), "error", 7000); return; }
     if (file.size >= 4 * 1024 * 1024 * 1024) { toast(t("inst.tooBig"), "error", 7000); return; }
@@ -70,6 +81,7 @@
     }
     kill();
     if (NDP.files) NDP.files.refresh();
+    if (expected && hexOf(expected) !== hexOf(res.sha256)) { toast(t("inst.shaMismatch"), "error", 12000); return; }
     await send({ path: dest, sha256: res.sha256, seed });
   }
 
@@ -77,14 +89,16 @@
   async function open(selected) {
     const file = h("input", { type: "file", accept: ".cia" });
     const url = h("input", { type: "text", placeholder: "https://…/game.cia", spellcheck: false, autocapitalize: "off", autocomplete: "off" });
+    const shaIn = h("input", { type: "text", placeholder: t("inst.shaPlaceholder"), spellcheck: false, autocapitalize: "off", autocomplete: "off" });
     const seedIn = h("input", { type: "text", placeholder: t("inst.seedPlaceholder"), spellcheck: false, autocapitalize: "off", autocomplete: "off" });
     const err = h("div.field-error", { role: "alert" });
-    for (const el of [file, url, seedIn]) el.addEventListener("input", () => { err.textContent = ""; });
+    for (const el of [file, url, shaIn, seedIn]) el.addEventListener("input", () => { err.textContent = ""; });
     const body = h("div", null,
       h("p", { text: t("inst.intro") }),
       selected
         ? h("p", null, h("strong", { text: t("inst.selected") }), " ", h("code", { text: selected }))
         : h("div", null, h("label.field", null, h("span", { text: t("inst.pickFile") }), file), h("label.field", null, h("span", { text: t("inst.orUrl") }), url)),
+      h("label.field", null, h("span", { text: t("inst.sha") }), shaIn, h("span.muted.small", { text: t("inst.shaHint") })),
       h("label.field", null, h("span", { text: t("inst.seed") }), seedIn, h("span.muted.small", { text: t("inst.seedHint") })),
       err);
     for (;;) {
@@ -92,21 +106,23 @@
       if (!ok) return;
       const seed = parseSeed(seedIn.value);
       if (seed === false) { err.textContent = t("inst.badSeed"); continue; }
-      if (selected) { await send({ path: selected, seed: seed || undefined }); return; }
+      const sha = parseSha(shaIn.value);
+      if (sha === false) { err.textContent = t("inst.badSha"); continue; }
+      if (selected) { await send({ path: selected, sha256: sha || undefined, seed: seed || undefined }); return; }
       const f = file.files && file.files[0], u = url.value.trim();
       if (f) {
         if (!isCia(f.name)) { err.textContent = t("inst.notCia"); continue; }
-        await uploadAndSend(f, seed || undefined);
+        await uploadAndSend(f, seed || undefined, sha || undefined);
         return;
       }
       if (u) {
         if (!validUrl(u)) { err.textContent = t("inst.badUrl"); continue; }
-        await send({ url: u, seed: seed || undefined });
+        await send({ url: u, sha256: sha || undefined, seed: seed || undefined });
         return;
       }
       err.textContent = t("inst.nothing");
     }
   }
 
-  NDP.install = { open, validUrl, isCia, parseSeed };
+  NDP.install = { open, validUrl, isCia, parseSeed, parseSha };
 })();

@@ -314,7 +314,8 @@ void uii_flow_draw(const ui_model *m) {
     for (i = 0; i < 4; i++) ui_text(60, 90 + (float)i * 22, 0.48f, COL_WHITE, 0, "%-20s %5u KiB/s", names[i], s->bench_kib[i]);
   } else if (s->state == INS_DONE) {
     ui_text(200, 150, 0.7f, COL_GREEN, UI_CENTER, "%s", UI_T("Installed", "Instalado"));
-    ui_text(200, 176, 0.38f, COL_DIM, UI_CENTER, "SHA-256 %.32s...", s->sha_hex);
+    ui_text(200, 168, 0.34f, COL_DIM, UI_CENTER, "SHA-256 %.32s", s->sha_hex);
+    ui_text(200, 179, 0.34f, COL_DIM, UI_CENTER, "%.32s", s->sha_hex + 32);
     if (s->seed == 1) ui_text(200, 192, 0.4f, COL_GREEN, UI_CENTER, "%s", UI_T("Game key (seed) registered.", "Chave do jogo (seed) registrada."));
     else if (s->seed == 2) ui_text(200, 192, 0.4f, COL_DIM, UI_CENTER, "%s", UI_T("This title needs no seed.", "Este título não precisa de seed."));
     else if (s->seed == 3) ui_text(200, 192, 0.4f, COL_YELLOW, UI_CENTER, "%s", UI_T("Could not get the seed: the game may not open.", "Não consegui a seed: o jogo pode não abrir."));

@@ -274,7 +274,7 @@ static bool sink_finish(sink *k, const cia_info *ci) {
   k->opened = false;
   {
     uint64_t el = now_ms() - g_start_ms;
-    alog("Install: finish 0x%08lX, %llu bytes in %lu s (%.2f MiB/s); inside AM writes %lu s; the network waited %lu s for the writer, the writer %lu s for data; sha256 %.16s...",
+    alog("Install: finish 0x%08lX, %llu bytes in %lu s (%.2f MiB/s); inside AM writes %lu s; the network waited %lu s for the writer, the writer %lu s for data; sha256 %s",
          (unsigned long)rc, (unsigned long long)k->in, (unsigned long)(el / 1000), el ? (double)k->in / 1048576.0 / ((double)el / 1000.0) : 0.0,
          (unsigned long)(g_am_ms / 1000), (unsigned long)(k->wait_prod_ms / 1000), (unsigned long)(k->wait_writer_ms / 1000), g_st.sha_hex);
   }
