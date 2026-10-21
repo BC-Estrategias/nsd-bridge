@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "alog.h"
+#include "nettune.h"
 #include "ndp/ndp_defs.h"
 #include "ndp/ndp_sha256.h"
 #include "update_manifest.h"
@@ -128,6 +129,7 @@ static bool fetch(const char *url, transfer *t) {
   ca.flags = CURL_BLOB_NOCOPY;
   curl_easy_setopt(c, CURLOPT_ERRORBUFFER, err);
   curl_easy_setopt(c, CURLOPT_URL, url);
+  curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, nsd_sockopt);
   curl_easy_setopt(c, CURLOPT_USERAGENT, "NSD-Bridge/" NDP_AGENT_VERSION);
   curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);

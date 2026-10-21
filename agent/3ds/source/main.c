@@ -54,7 +54,8 @@
 #define PAIRING_WINDOW_MS 120000u
 #define FORGET_CONFIRM_MS 5000u
 #define SOC_ALIGN 0x1000
-#define SOC_BUFSIZE 0x100000 /* the default; dbg-socbuf (MiB) in the agent folder can raise it while slow downloads are investigated */
+#define SOC_BUFSIZE 0x400000 /* 4 MiB: with the larger receive windows (nettune.h) 8 connections need more than the old 1 MiB */
+#define SOC_BUFSIZE_MIN 0x100000
 static u32 g_soc_size = SOC_BUFSIZE;
 
 #define C_RESET "\x1b[0m"
@@ -416,12 +417,9 @@ static bool start_soc(uint64_t now) {
   Result r;
   if (now < g_next_soc_try) return false;
   if (!g_soc_buf) {
-    FILE *sf = fopen("sdmc:/3ds/nintendo-dev-agent/dbg-socbuf", "rb");
-    char sb[8] = "";
     g_soc_size = SOC_BUFSIZE;
-    if (sf) { size_t sn = fread(sb, 1, sizeof sb - 1, sf); sb[sn] = '\0'; fclose(sf); if (atoi(sb) >= 1 && atoi(sb) <= 8) g_soc_size = (u32)atoi(sb) * 0x100000u; }
-    if (g_soc_size != SOC_BUFSIZE) alog("Diag: socket memory %u MiB", (unsigned)(g_soc_size >> 20));
     g_soc_buf = (u32 *)memalign(SOC_ALIGN, g_soc_size);
+    if (!g_soc_buf) { g_soc_size = SOC_BUFSIZE_MIN; g_soc_buf = (u32 *)memalign(SOC_ALIGN, g_soc_size); } /* not enough memory for 4 MiB: the old size */
   }
   if (!g_soc_buf) {
     alog("ERROR: cannot allocate soc buffer");

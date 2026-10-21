@@ -3,11 +3,6 @@
 
 #include <3ds.h>
 #include <curl/curl.h>
-#include <mbedtls/aes.h>
-#include <mbedtls/chachapoly.h>
-#include <mbedtls/gcm.h>
-#include <mbedtls/sha256.h>
-#include <mbedtls/ssl.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +14,7 @@
 #include <time.h>
 
 #include "alog.h"
+#include "nettune.h"
 #include "ndp/ndp_defs.h"
 #include "ndp/ndp_sha256.h"
 #include "dlmap.h"
@@ -566,6 +562,7 @@ static CURLcode run_curl(const char *url, xfer *x, bool range) {
   curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
   curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
+  curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, nsd_sockopt);
   if (range) curl_easy_setopt(c, CURLOPT_RANGE, "0-16383");
   curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, on_header);
   curl_easy_setopt(c, CURLOPT_HEADERDATA, x);
@@ -610,7 +607,7 @@ static CURLcode run_curl(const char *url, xfer *x, bool range) {
  * interrupted (network, battery, power) the next attempt for the same URL continues where it stopped; if the server does
  * not honour Range, the card is too full or anything about the file goes wrong, the old direct streaming is used instead. */
 #define DL_DIR "sdmc:/3ds/nintendo-dev-agent/downloads"
-#define DL_WORKERS 4
+#define DL_WORKERS 6
 #define DL_TRIES 4
 #define DL_KEEP_DAYS 7
 static bool g_range_ok;
@@ -702,6 +699,7 @@ static void dl_setup(dlw *w, const char *url, struct curl_blob *ca, void *cbdata
   curl_easy_setopt(w->c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
   curl_easy_setopt(w->c, CURLOPT_WRITEFUNCTION, on_dl_body);
   curl_easy_setopt(w->c, CURLOPT_WRITEDATA, cbdata);
+  curl_easy_setopt(w->c, CURLOPT_SOCKOPTFUNCTION, nsd_sockopt);
 }
 
 enum { DL_OK = 0, DL_NET, DL_CANCEL, DL_IO, DL_NORANGE };
@@ -924,75 +922,6 @@ void installer_pending_clear(void) { dl_sweep(true); }
 /* ------------------------------------------------------------------------------------------------ speed test */
 /* A URL ending in "#speedtest" does not install anything: it downloads a few MB with each of four variations of the network
  * code and throws the data away, so the effect of each choice can be measured against a fast server. */
-/* Diagnostics for slow HTTPS: dbg-cipher (one line, in the agent folder) forces a cipher list; the negotiated suite is logged. */
-static char g_cipher[120];
-static int g_rcvbuf_kib;                 /* dbg-rcvbuf: SO_RCVBUF in KiB for the speed test connections (0 = leave it) */
-static void load_cipher(void) {
-  FILE *f = fopen("sdmc:/3ds/nintendo-dev-agent/dbg-cipher", "rb");
-  size_t n, i;
-  g_cipher[0] = '\0';
-  {
-    FILE *rf = fopen("sdmc:/3ds/nintendo-dev-agent/dbg-rcvbuf", "rb");
-    char rb[12] = "";
-    g_rcvbuf_kib = 0;
-    if (rf) { size_t rn = fread(rb, 1, sizeof rb - 1, rf); rb[rn] = '\0'; fclose(rf); g_rcvbuf_kib = atoi(rb); }
-    if (g_rcvbuf_kib) alog("Speed test: SO_RCVBUF %d KiB", g_rcvbuf_kib);
-  }
-  if (!f) return;
-  n = fread(g_cipher, 1, sizeof g_cipher - 1, f);
-  fclose(f);
-  g_cipher[n] = '\0';
-  for (i = 0; g_cipher[i]; i++) if (g_cipher[i] == '\r' || g_cipher[i] == '\n') { g_cipher[i] = '\0'; break; }
-}
-static void log_tls(CURL *c) {
-  struct curl_tlssessioninfo *ti = NULL;
-  if (curl_easy_getinfo(c, CURLINFO_TLS_SSL_PTR, &ti) == CURLE_OK && ti && ti->backend == CURLSSLBACKEND_MBEDTLS && ti->internals)
-    alog("TLS: %s %s%s%s", mbedtls_ssl_get_version((const mbedtls_ssl_context *)ti->internals), mbedtls_ssl_get_ciphersuite((const mbedtls_ssl_context *)ti->internals),
-         g_cipher[0] ? " (forced: " : "", g_cipher[0] ? g_cipher : "");
-}
-/* "#cryptotest" on a URL: how fast this console encrypts, with no network at all (the numbers go to the log). */
-static void run_cryptotest(void) {
-  enum { CHUNK = 64 * 1024, N = 16 };
-  uint8_t *in = malloc(CHUNK), *out = malloc(CHUNK + 16);
-  uint8_t key[32] = {1, 2, 3}, iv[16] = {4, 5, 6}, tag[16], nonce[12] = {7, 8, 9}, hash[32];
-  uint64_t t;
-  int i;
-  if (!in || !out) { free(in); free(out); return; }
-  memset(in, 0x5A, CHUNK);
-  {
-    mbedtls_gcm_context g;
-    mbedtls_gcm_init(&g);
-    mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, key, 128);
-    t = now_ms();
-    for (i = 0; i < N; i++) mbedtls_gcm_crypt_and_tag(&g, MBEDTLS_GCM_DECRYPT, CHUNK, nonce, 12, NULL, 0, in, out, 16, tag);
-    alog("Crypto: AES-128-GCM %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
-    mbedtls_gcm_free(&g);
-  }
-  {
-    mbedtls_aes_context a;
-    mbedtls_aes_init(&a);
-    mbedtls_aes_setkey_dec(&a, key, 128);
-    t = now_ms();
-    for (i = 0; i < N; i++) mbedtls_aes_crypt_cbc(&a, MBEDTLS_AES_DECRYPT, CHUNK, iv, in, out);
-    alog("Crypto: AES-128-CBC %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
-    mbedtls_aes_free(&a);
-  }
-  {
-    mbedtls_chachapoly_context c;
-    mbedtls_chachapoly_init(&c);
-    mbedtls_chachapoly_setkey(&c, key);
-    t = now_ms();
-    for (i = 0; i < N; i++) mbedtls_chachapoly_encrypt_and_tag(&c, CHUNK, nonce, NULL, 0, in, out, tag);
-    alog("Crypto: ChaCha20-Poly1305 %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
-    mbedtls_chachapoly_free(&c);
-  }
-  t = now_ms();
-  for (i = 0; i < N; i++) mbedtls_sha256(in, CHUNK, hash, 0);
-  alog("Crypto: SHA-256 %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
-  free(in);
-  free(out);
-}
-
 static int g_bench_rc = 0; /* last curl result (and HTTP status) seen by a speed-test variant */
 static long g_bench_http = 0;
 typedef struct { uint64_t bytes, limit, t0; } bench_x;
@@ -1007,13 +936,8 @@ static int on_bench_xfer(void *ud, curl_off_t a, curl_off_t b, curl_off_t c, cur
   (void)a; (void)b; (void)c; (void)d;
   return (cancelled() || now_ms() - x->t0 > 25000) ? 1 : 0; /* never longer than 25 s per variation */
 }
-static int on_bench_sockopt(void *p, curl_socket_t fd, curlsocktype purpose) {
-  int size = (g_rcvbuf_kib ? g_rcvbuf_kib : 64) * 1024;
-  (void)p; (void)purpose;
-  (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
-  return CURL_SOCKOPT_OK;
-}
 static unsigned bench_one(const char *url, bool use_multi, bool big_window, uint64_t limit) {
+  (void)big_window; /* every connection now has the large window */
   CURL *c = curl_easy_init();
   bench_x x = {0, limit, now_ms()};
   struct curl_blob ca;
@@ -1032,11 +956,10 @@ static unsigned bench_one(const char *url, bool use_multi, bool big_window, uint
   curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)IO_SIZE);
   curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_bench);
   curl_easy_setopt(c, CURLOPT_WRITEDATA, &x);
-  if (g_cipher[0]) curl_easy_setopt(c, CURLOPT_SSL_CIPHER_LIST, g_cipher);
   curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, on_bench_xfer);
   curl_easy_setopt(c, CURLOPT_XFERINFODATA, &x);
-  if (big_window || g_rcvbuf_kib) curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, on_bench_sockopt);
+  curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, nsd_sockopt);
   x.t0 = now_ms();
   if (!use_multi) {
     g_bench_rc = (int)curl_easy_perform(c);
@@ -1055,7 +978,6 @@ static unsigned bench_one(const char *url, bool use_multi, bool big_window, uint
     curl_multi_cleanup(mh);
   }
   el = now_ms() - x.t0;
-  log_tls(c);
   curl_easy_cleanup(c);
   return el > 200 ? (unsigned)(x.bytes * 1000 / 1024 / el) : 0;
 }
@@ -1088,8 +1010,7 @@ static unsigned bench_parallel(const char *url, int n, uint64_t limit) {
     curl_easy_setopt(h[i], CURLOPT_BUFFERSIZE, (long)IO_SIZE);
     curl_easy_setopt(h[i], CURLOPT_WRITEFUNCTION, on_bench);
     curl_easy_setopt(h[i], CURLOPT_WRITEDATA, &x);
-    if (g_cipher[0]) curl_easy_setopt(h[i], CURLOPT_SSL_CIPHER_LIST, g_cipher);
-    if (g_rcvbuf_kib) curl_easy_setopt(h[i], CURLOPT_SOCKOPTFUNCTION, on_bench_sockopt);
+    curl_easy_setopt(h[i], CURLOPT_SOCKOPTFUNCTION, nsd_sockopt);
     curl_multi_add_handle(mh, h[i]);
   }
   x.t0 = now_ms();
@@ -1100,7 +1021,7 @@ static unsigned bench_parallel(const char *url, int n, uint64_t limit) {
   el = now_ms() - x.t0;
   { CURLMsg *mg; int left; g_bench_rc = 0; while ((mg = curl_multi_info_read(mh, &left))) if (mg->msg == CURLMSG_DONE && mg->data.result != CURLE_OK) g_bench_rc = (int)mg->data.result; }
   g_bench_http = 0;
-  if (h[0]) { curl_easy_getinfo(h[0], CURLINFO_RESPONSE_CODE, &g_bench_http); log_tls(h[0]); }
+  if (h[0]) { curl_easy_getinfo(h[0], CURLINFO_RESPONSE_CODE, &g_bench_http); }
   for (i = 0; i < n; i++) if (h[i]) { curl_multi_remove_handle(mh, h[i]); curl_easy_cleanup(h[i]); }
   curl_multi_cleanup(mh);
   return el > 200 ? (unsigned)(x.bytes * 1000 / 1024 / el) : 0;
@@ -1117,7 +1038,6 @@ static void run_bench(const char *url_with_fragment) {
   g_st.is_bench = 1;
   LightLock_Unlock(&g_lock);
   set_state(INS_INSTALLING);
-  load_cipher();
   for (i = 0; i < 4 && !cancelled(); i++) {
     r[i] = conns[i] ? bench_parallel(url, conns[i], 6u * 1024u * 1024u) : bench_one(url, false, false, 6u * 1024u * 1024u);
     if (r[i] == 0) alog("Speed test: %s: failed (curl %d, HTTP %ld)", names[i], g_bench_rc, g_bench_http);
@@ -1192,7 +1112,6 @@ static void run_job(void *arg) {
     x.probe = probe;
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) { fail(INS_E_NET, 0); goto done; }
     curl_ready = true;
-    if (strlen(g_src) > 11 && strcmp(g_src + strlen(g_src) - 11, "#cryptotest") == 0) { set_state(INS_INSTALLING); run_cryptotest(); set_state(INS_DONE); goto done; }
     if (strlen(g_src) > 10 && strcmp(g_src + strlen(g_src) - 10, "#speedtest") == 0) { run_bench(g_src); goto done; }
     code = run_curl(g_src, &x, true);
     if (cancelled()) { set_state(INS_IDLE); goto done; }
