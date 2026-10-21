@@ -168,6 +168,8 @@ static const char PROPFIND_BODY[] =
     "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>";
 
 /* One request on the share. True when curl succeeded and the server answered below 400. The connection is kept between calls. */
+static char g_tr_cipher[120]; /* dbg-cipher: a forced cipher list while slow HTTPS is investigated */
+
 /* The options every request on the share uses; the string arguments are copied by curl, so the buffers can be reused. */
 static void apply_opts(CURL *c, const char *method, const char *path) {
   static char url[1000], enc[700], userpwd[100];
@@ -194,6 +196,7 @@ static void apply_opts(CURL *c, const char *method, const char *path) {
   curl_easy_setopt(c, CURLOPT_USERPWD, userpwd);
   curl_easy_setopt(c, CURLOPT_HTTPAUTH, (long)CURLAUTH_BASIC);
   if (method) curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, method);
+  if (g_tr_cipher[0]) curl_easy_setopt(c, CURLOPT_SSL_CIPHER_LIST, g_tr_cipher);
 }
 
 /* One request on the share. True when curl succeeded and the server answered below 400. All requests go through the one
@@ -979,6 +982,14 @@ static int g_job;
 static void run(void *arg) {
   (void)arg;
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) { fail(TRE_NET, "curl"); goto done; }
+  {
+    FILE *cf = fopen("sdmc:/3ds/nintendo-dev-agent/dbg-cipher", "rb");
+    size_t cn = 0, ci;
+    g_tr_cipher[0] = '\0';
+    if (cf) { cn = fread(g_tr_cipher, 1, sizeof g_tr_cipher - 1, cf); fclose(cf); }
+    g_tr_cipher[cn] = '\0';
+    for (ci = 0; g_tr_cipher[ci]; ci++) if (g_tr_cipher[ci] == '\r' || g_tr_cipher[ci] == '\n') { g_tr_cipher[ci] = '\0'; break; }
+  }
   g_c = curl_easy_init();
   g_mh = curl_multi_init();
   g_es = malloc(ES_MAX * sizeof *g_es);
