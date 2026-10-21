@@ -54,7 +54,8 @@
 #define PAIRING_WINDOW_MS 120000u
 #define FORGET_CONFIRM_MS 5000u
 #define SOC_ALIGN 0x1000
-#define SOC_BUFSIZE 0x100000
+#define SOC_BUFSIZE 0x100000 /* the default; dbg-socbuf (MiB) in the agent folder can raise it while slow downloads are investigated */
+static u32 g_soc_size = SOC_BUFSIZE;
 
 #define C_RESET "\x1b[0m"
 #define C_GREEN "\x1b[32;1m"
@@ -414,14 +415,21 @@ static void set_err(const char *fmt, unsigned long v) { snprintf(g_err, sizeof g
 static bool start_soc(uint64_t now) {
   Result r;
   if (now < g_next_soc_try) return false;
-  if (!g_soc_buf) g_soc_buf = (u32 *)memalign(SOC_ALIGN, SOC_BUFSIZE);
+  if (!g_soc_buf) {
+    FILE *sf = fopen("sdmc:/3ds/nintendo-dev-agent/dbg-socbuf", "rb");
+    char sb[8] = "";
+    g_soc_size = SOC_BUFSIZE;
+    if (sf) { size_t sn = fread(sb, 1, sizeof sb - 1, sf); sb[sn] = '\0'; fclose(sf); if (atoi(sb) >= 1 && atoi(sb) <= 8) g_soc_size = (u32)atoi(sb) * 0x100000u; }
+    if (g_soc_size != SOC_BUFSIZE) alog("Diag: socket memory %u MiB", (unsigned)(g_soc_size >> 20));
+    g_soc_buf = (u32 *)memalign(SOC_ALIGN, g_soc_size);
+  }
   if (!g_soc_buf) {
     alog("ERROR: cannot allocate soc buffer");
     snprintf(g_err, sizeof g_err, "no memory for soc buffer");
     g_next_soc_try = now + 5000;
     return false;
   }
-  r = socInit(g_soc_buf, SOC_BUFSIZE);
+  r = socInit(g_soc_buf, g_soc_size);
   if (R_FAILED(r)) {
     alog("ERROR: socInit 0x%08lX", (unsigned long)r);
     set_err("socInit failed 0x%08lX", (unsigned long)r);

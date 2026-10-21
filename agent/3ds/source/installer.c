@@ -926,10 +926,18 @@ void installer_pending_clear(void) { dl_sweep(true); }
  * code and throws the data away, so the effect of each choice can be measured against a fast server. */
 /* Diagnostics for slow HTTPS: dbg-cipher (one line, in the agent folder) forces a cipher list; the negotiated suite is logged. */
 static char g_cipher[120];
+static int g_rcvbuf_kib;                 /* dbg-rcvbuf: SO_RCVBUF in KiB for the speed test connections (0 = leave it) */
 static void load_cipher(void) {
   FILE *f = fopen("sdmc:/3ds/nintendo-dev-agent/dbg-cipher", "rb");
   size_t n, i;
   g_cipher[0] = '\0';
+  {
+    FILE *rf = fopen("sdmc:/3ds/nintendo-dev-agent/dbg-rcvbuf", "rb");
+    char rb[12] = "";
+    g_rcvbuf_kib = 0;
+    if (rf) { size_t rn = fread(rb, 1, sizeof rb - 1, rf); rb[rn] = '\0'; fclose(rf); g_rcvbuf_kib = atoi(rb); }
+    if (g_rcvbuf_kib) alog("Speed test: SO_RCVBUF %d KiB", g_rcvbuf_kib);
+  }
   if (!f) return;
   n = fread(g_cipher, 1, sizeof g_cipher - 1, f);
   fclose(f);
@@ -1000,7 +1008,7 @@ static int on_bench_xfer(void *ud, curl_off_t a, curl_off_t b, curl_off_t c, cur
   return (cancelled() || now_ms() - x->t0 > 25000) ? 1 : 0; /* never longer than 25 s per variation */
 }
 static int on_bench_sockopt(void *p, curl_socket_t fd, curlsocktype purpose) {
-  int size = 64 * 1024;
+  int size = (g_rcvbuf_kib ? g_rcvbuf_kib : 64) * 1024;
   (void)p; (void)purpose;
   (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
   return CURL_SOCKOPT_OK;
@@ -1028,7 +1036,7 @@ static unsigned bench_one(const char *url, bool use_multi, bool big_window, uint
   curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, on_bench_xfer);
   curl_easy_setopt(c, CURLOPT_XFERINFODATA, &x);
-  if (big_window) curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, on_bench_sockopt);
+  if (big_window || g_rcvbuf_kib) curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, on_bench_sockopt);
   x.t0 = now_ms();
   if (!use_multi) {
     g_bench_rc = (int)curl_easy_perform(c);
@@ -1081,6 +1089,7 @@ static unsigned bench_parallel(const char *url, int n, uint64_t limit) {
     curl_easy_setopt(h[i], CURLOPT_WRITEFUNCTION, on_bench);
     curl_easy_setopt(h[i], CURLOPT_WRITEDATA, &x);
     if (g_cipher[0]) curl_easy_setopt(h[i], CURLOPT_SSL_CIPHER_LIST, g_cipher);
+    if (g_rcvbuf_kib) curl_easy_setopt(h[i], CURLOPT_SOCKOPTFUNCTION, on_bench_sockopt);
     curl_multi_add_handle(mh, h[i]);
   }
   x.t0 = now_ms();
