@@ -98,7 +98,7 @@ ui_action uitr_handle(u32 down, u32 held, const touchPosition *touch, bool *redr
     return UI_NONE;
   }
   if (s.state == TRS_WORKING) {
-    if ((down & KEY_B) || ((down & KEY_TOUCH) && tap_in(touch, 60, 195, 260, 235))) { tr_cancel(); *redraw = true; }
+    if ((down & KEY_B) || ((down & KEY_TOUCH) && tap_in(touch, 88, 160, 233, 210))) { tr_cancel(); *redraw = true; }
     *redraw = true;
     return UI_NONE;
   }
@@ -285,9 +285,9 @@ void uitr_draw(const ui_model *m) {
       button(10, 145, un ? UI_RGB(0xe5, 0x39, 0x35) : UI_RGB(0x4c, 0xaf, 0x50), un ? UI_T("A: Remove", "A: Remover") : UI_T("A: Install", "A: Instalar"));
       button(165, 145, UI_RGB(0x42, 0x7a, 0xb8), UI_T("B: Cancel", "B: Cancelar"));
     } else if (s.state == TRS_WORKING) {
-      button(60, 185, UI_RGB(0xe5, 0x39, 0x35), UI_T("B: Cancel", "B: Cancelar"));
+      button(88, 160, UI_RGB(0xe5, 0x39, 0x35), UI_T("B: Cancel", "B: Cancelar"));
     } else {
-      button(60, 185, UI_RGB(0x42, 0x7a, 0xb8), "OK");
+      button(88, 160, UI_RGB(0x42, 0x7a, 0xb8), "OK");
     }
     return;
   }
@@ -295,7 +295,7 @@ void uitr_draw(const ui_model *m) {
     ui_text(200, 110, 0.5f, COL_RED, UI_CENTER, "%.70s", err_text(&s));
     ui_scene_bottom(COL_BOT_BG);
     ui_bottom_chrome(UI_T("Translations", "Traduções"), UI_T("Failed", "Falhou"), "A / B: OK");
-    button(60, 185, UI_RGB(0x42, 0x7a, 0xb8), "OK");
+    button(88, 160, UI_RGB(0x42, 0x7a, 0xb8), "OK");
     return;
   }
   /* ---- not configured ---- */
