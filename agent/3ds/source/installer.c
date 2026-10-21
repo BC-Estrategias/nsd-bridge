@@ -3,6 +3,10 @@
 
 #include <3ds.h>
 #include <curl/curl.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/chachapoly.h>
+#include <mbedtls/gcm.h>
+#include <mbedtls/sha256.h>
 #include <mbedtls/ssl.h>
 #include <malloc.h>
 #include <stdio.h>
@@ -938,6 +942,49 @@ static void log_tls(CURL *c) {
     alog("TLS: %s %s%s%s", mbedtls_ssl_get_version((const mbedtls_ssl_context *)ti->internals), mbedtls_ssl_get_ciphersuite((const mbedtls_ssl_context *)ti->internals),
          g_cipher[0] ? " (forced: " : "", g_cipher[0] ? g_cipher : "");
 }
+/* "#cryptotest" on a URL: how fast this console encrypts, with no network at all (the numbers go to the log). */
+static void run_cryptotest(void) {
+  enum { CHUNK = 64 * 1024, N = 16 };
+  uint8_t *in = malloc(CHUNK), *out = malloc(CHUNK + 16);
+  uint8_t key[32] = {1, 2, 3}, iv[16] = {4, 5, 6}, tag[16], nonce[12] = {7, 8, 9}, hash[32];
+  uint64_t t;
+  int i;
+  if (!in || !out) { free(in); free(out); return; }
+  memset(in, 0x5A, CHUNK);
+  {
+    mbedtls_gcm_context g;
+    mbedtls_gcm_init(&g);
+    mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, key, 128);
+    t = now_ms();
+    for (i = 0; i < N; i++) mbedtls_gcm_crypt_and_tag(&g, MBEDTLS_GCM_DECRYPT, CHUNK, nonce, 12, NULL, 0, in, out, 16, tag);
+    alog("Crypto: AES-128-GCM %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
+    mbedtls_gcm_free(&g);
+  }
+  {
+    mbedtls_aes_context a;
+    mbedtls_aes_init(&a);
+    mbedtls_aes_setkey_dec(&a, key, 128);
+    t = now_ms();
+    for (i = 0; i < N; i++) mbedtls_aes_crypt_cbc(&a, MBEDTLS_AES_DECRYPT, CHUNK, iv, in, out);
+    alog("Crypto: AES-128-CBC %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
+    mbedtls_aes_free(&a);
+  }
+  {
+    mbedtls_chachapoly_context c;
+    mbedtls_chachapoly_init(&c);
+    mbedtls_chachapoly_setkey(&c, key);
+    t = now_ms();
+    for (i = 0; i < N; i++) mbedtls_chachapoly_encrypt_and_tag(&c, CHUNK, nonce, NULL, 0, in, out, tag);
+    alog("Crypto: ChaCha20-Poly1305 %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
+    mbedtls_chachapoly_free(&c);
+  }
+  t = now_ms();
+  for (i = 0; i < N; i++) mbedtls_sha256(in, CHUNK, hash, 0);
+  alog("Crypto: SHA-256 %lu KiB/s", (unsigned long)((uint64_t)N * CHUNK / 1024 * 1000 / (now_ms() - t + 1)));
+  free(in);
+  free(out);
+}
+
 static int g_bench_rc = 0; /* last curl result (and HTTP status) seen by a speed-test variant */
 static long g_bench_http = 0;
 typedef struct { uint64_t bytes, limit, t0; } bench_x;
@@ -1136,6 +1183,7 @@ static void run_job(void *arg) {
     x.probe = probe;
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) { fail(INS_E_NET, 0); goto done; }
     curl_ready = true;
+    if (strlen(g_src) > 11 && strcmp(g_src + strlen(g_src) - 11, "#cryptotest") == 0) { set_state(INS_INSTALLING); run_cryptotest(); set_state(INS_DONE); goto done; }
     if (strlen(g_src) > 10 && strcmp(g_src + strlen(g_src) - 10, "#speedtest") == 0) { run_bench(g_src); goto done; }
     code = run_curl(g_src, &x, true);
     if (cancelled()) { set_state(INS_IDLE); goto done; }
