@@ -69,7 +69,7 @@ void uitr_open(int kind) {
   nview = 0;
   built_rev = ~0u;
   link_msg[0] = '\0';
-  if (tr_configured()) tr_list(false);
+  if (tr_configured()) tr_list(false); /* the saved catalog at once; a quick check then reads it again if the server changed */
 }
 
 static const tr_pack *cur(void) { return nview ? tr_at(view[sel]) : NULL; }
@@ -248,6 +248,8 @@ static const char *err_text(const tr_status *s) {
     case TRE_NET:
       if (s->http_code == 401 || s->http_code == 403) snprintf(buf, sizeof buf, "%s (HTTP %ld)", UI_T("The share refused access", "O link recusou o acesso"), s->http_code);
       else if (s->http_code == 404) snprintf(buf, sizeof buf, "%s", UI_T("Not found on the share (404).", "Não encontrado no link (404)."));
+      else if (s->http_code >= 500) snprintf(buf, sizeof buf, "%s (HTTP %ld)", UI_T("Server is down", "Servidor fora do ar"), s->http_code);
+      else if (s->net_code == 28 || s->net_code == 6 || s->net_code == 7) snprintf(buf, sizeof buf, "%s", UI_T("Server not answering (down or no network)", "Servidor não responde (fora do ar ou sem rede)"));
       else snprintf(buf, sizeof buf, "%s (curl %d)", UI_T("Could not reach the share", "Não conseguiu acessar o link"), s->net_code);
       return buf;
     case TRE_NOFILES: return UI_T("This pack has no files in arquivos/.", "Este pacote não tem arquivos em arquivos/.");
@@ -365,6 +367,10 @@ void uitr_draw(const ui_model *m) {
     const tr_pack *p = cur();
     if (p) draw_pack_details(p);
     else ui_text(200, 110, 0.5f, COL_DIM, UI_CENTER, "%s", UI_T("No translations here (Y: refresh).", "Nenhuma tradução aqui (Y: atualizar)."));
+    if (s.offline) {
+      if (s.http_code >= 500) ui_text(200, 224, 0.4f, COL_RED, UI_CENTER, "%s (HTTP %ld) - %s", UI_T("Server is down", "Servidor fora do ar"), s.http_code, UI_T("showing the saved list", "mostrando a lista salva"));
+      else ui_text(200, 224, 0.4f, COL_RED, UI_CENTER, "%s - %s", UI_T("Server not answering", "Servidor não responde"), UI_T("showing the saved list", "mostrando a lista salva"));
+    }
     ui_scene_bottom(COL_BOT_BG);
     if (st == TX_ACTIONS && p) {
       ui_bottom_chrome(kind_title(), p->ref.game, UI_T("A: Select   B: Back", "A: Selecionar   B: Voltar"));

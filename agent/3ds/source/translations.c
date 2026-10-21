@@ -181,6 +181,7 @@ static size_t sink_buf(char *ptr, size_t a, size_t b, void *ud) {
   return n;
 }
 
+static char g_etag[72]; /* the share root's etag when the saved catalog was made */
 static CURL *g_c;
 static int g_net_code;
 static long g_http_code;
@@ -342,7 +343,7 @@ static void save_cache(void) {
   mkdir("sdmc:/3ds/nintendo-dev-agent/cache", 0777);
   f = fopen(CACHE_PATH, "wb");
   if (!f) return;
-  fprintf(f, "# %s\n@ %s\n", g_link, g_root);
+  fprintf(f, "# %s\n@ %s\n~ %s\n", g_link, g_root, g_etag);
   for (i = 0; i < g_np; i++)
     fprintf(f, "%s\t%s - %s\t%s\t%s\t%s\t%s\t%s\t%s\n", g_packs[i].ref.lang, g_packs[i].ref.id, g_packs[i].ref.game, g_packs[i].ref.team, g_packs[i].ref.version,
             g_packs[i].desc, g_packs[i].status, g_packs[i].author, g_packs[i].region);
@@ -369,6 +370,7 @@ static bool load_cache(void) {
     }
   }
   g_np = 0;
+  g_etag[0] = '\0';
   while (ok && fgets(line, sizeof line, f)) {
     char *lang = line, *idn, *team, *ver, *e;
     tr_ref r;
@@ -376,6 +378,7 @@ static bool load_cache(void) {
     char *meta_fields[4] = {NULL, NULL, NULL, NULL};
     size_t l = strlen(line);
     while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+    if (line[0] == '~' && line[1] == ' ') { snprintf(g_etag, sizeof g_etag, "%s", line + 2); continue; }
     idn = strchr(lang, '\t');
     if (!idn) continue;
     *idn++ = '\0';
@@ -411,6 +414,24 @@ static bool load_cache(void) {
   fclose(f);
   if (!ok) g_np = 0;
   return ok && g_np > 0;
+}
+
+/* A folder's etag changes whenever anything inside it does, so one small request tells whether the saved catalog is still current. */
+static const char ETAG_BODY[] = "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getetag/></d:prop></d:propfind>";
+static bool fetch_etag(char *out, size_t cap) {
+  buf b = {0, 0, 0, 8191, false};
+  const char *e;
+  size_t n = 0;
+  out[0] = '\0';
+  if (!http("PROPFIND", "", "0", ETAG_BODY, sink_buf, &b) || !b.p) { free(b.p); return false; }
+  e = strstr(b.p, "getetag>");
+  if (e) {
+    for (e += 8; *e && *e != '<' && n + 1 < cap; e++)
+      if ((*e >= '0' && *e <= '9') || (*e >= 'a' && *e <= 'z') || (*e >= 'A' && *e <= 'Z') || *e == '-' || *e == '_') out[n++] = *e;
+    out[n] = '\0';
+  }
+  free(b.p);
+  return n > 0;
 }
 
 /* The mods catalog: <ID - game>/<mod>/<version>, three levels under the root. */
@@ -971,7 +992,7 @@ static uint64_t g_ms_sd, g_ms_net, g_ms_open, g_ms_close, g_ms_ren;     /* diagn
 static long g_connects;                 /* diagnostics: new HTTPS connections opened by an install, and the time spent waiting */
 static double g_sum_tls, g_sum_first;
 #define WBUF (128u * 1024u) /* what is handed to the card in one write: it is very slow with the 16 KiB pieces a download delivers */
-typedef struct { CURL *c; FILE *f; char *wbuf; unsigned idx; uint64_t got; bool active; char tmp[340], dst[330]; } slot;
+typedef struct { CURL *c; FILE *f; char *wbuf; unsigned idx; uint64_t got; bool active; int tries; char tmp[340], dst[330]; } slot;
 static size_t sink_slot(char *ptr, size_t a, size_t b, void *ud) {
   slot *x = ud;
   size_t n = a * b;
@@ -1119,7 +1140,10 @@ static void job_install(void) {
         if (slash) { snprintf(dirrel, sizeof dirrel, "%.*s", (int)(slash - rel), rel); mkdir_p(base, dirrel); }
         t_b = now_ms();
         snprintf(s2->dst, sizeof s2->dst, "%s/%s", base, rel);
-        snprintf(s2->tmp, sizeof s2->tmp, "%s.nsdtmp", s2->dst);
+        /* a translation is written straight to its name (the record already says "incomplete" until the end), which saves a rename
+         * per file on the card; a mod keeps the temporary name because it may be replacing a file that was backed up */
+        if (pk.kind == 0) snprintf(s2->tmp, sizeof s2->tmp, "%s", s2->dst);
+        else snprintf(s2->tmp, sizeof s2->tmp, "%s.nsdtmp", s2->dst);
         snprintf(src, sizeof src, "%s/arquivos/%s", pk.path, rel);
         if (pk.kind == 1) {
           int bk = backup_existing(base, pk.ref.team, rel, s2->dst);
@@ -1131,6 +1155,7 @@ static void job_install(void) {
         g_ms_open += now_ms() - t_b;
         if (!s2->f) { fail(TRE_IO, rel); bad = true; break; }
         s2->got = 0;
+        s2->tries = 0;
         s2->idx = next++;
         curl_easy_reset(s2->c);
         apply_opts(s2->c, "GET", src);
@@ -1173,6 +1198,25 @@ static void job_install(void) {
         d->f = NULL;
         d->active = false;
         active--;
+        if ((msg->data.result != CURLE_OK || http_code >= 500) && d->tries < 3 && !cancelled()) {
+          /* the share answers an overloaded 5xx or drops a connection now and then: that file is fetched again (three times at most) */
+          d->tries++;
+          alog("Translations: %s failed (curl %d, HTTP %ld), try %d", file_at(d->idx), (int)msg->data.result, http_code, d->tries + 1);
+          remove(d->tmp);
+          d->got = 0;
+          d->f = fopen(d->tmp, "wb");
+          if (!d->f) { fail(TRE_IO, file_at(d->idx)); bad = true; break; }
+          if (d->wbuf) setvbuf(d->f, d->wbuf, _IOFBF, WBUF);
+          snprintf(src, sizeof src, "%s/arquivos/%s", pk.path, file_at(d->idx));
+          curl_easy_reset(d->c);
+          apply_opts(d->c, "GET", src);
+          curl_easy_setopt(d->c, CURLOPT_WRITEFUNCTION, sink_slot);
+          curl_easy_setopt(d->c, CURLOPT_WRITEDATA, d);
+          curl_multi_add_handle(g_mh, d->c);
+          d->active = true;
+          active++;
+          continue;
+        }
         if (msg->data.result != CURLE_OK || http_code < 200 || http_code >= 400) {
           g_net_code = (int)msg->data.result;
           g_http_code = http_code;
@@ -1182,10 +1226,12 @@ static void job_install(void) {
           break;
         }
         if (g_files[d->idx].size && d->got != g_files[d->idx].size) { remove(d->tmp); fail(TRE_SIZE, file_at(d->idx)); bad = true; break; }
-        t_b = now_ms();
-        remove(d->dst);
-        if (rename(d->tmp, d->dst) != 0) { remove(d->tmp); fail(TRE_IO, file_at(d->idx)); bad = true; break; }
-        g_ms_ren += now_ms() - t_b;
+        if (strcmp(d->tmp, d->dst)) {
+          t_b = now_ms();
+          remove(d->dst);
+          if (rename(d->tmp, d->dst) != 0) { remove(d->tmp); fail(TRE_IO, file_at(d->idx)); bad = true; break; }
+          g_ms_ren += now_ms() - t_b;
+        }
         g_fflag[d->idx] |= 2;
         g_bytes_base += d->got;
         done++;
@@ -1289,7 +1335,7 @@ static void job_uninstall(void) {
 }
 
 /* ------------------------------------------------------------------------------------------------ the worker */
-enum { J_LIST, J_PREPARE, J_RUN };
+enum { J_LIST, J_PREPARE, J_RUN, J_CHECK };
 static int g_job;
 
 static void run(void *arg) {
@@ -1299,7 +1345,30 @@ static void run(void *arg) {
   g_mh = curl_multi_init();
   g_es = malloc(ES_MAX * sizeof *g_es);
   if (!g_c || !g_mh || !g_es) { fail(TRE_IO, "memory"); goto cleanup; }
-  if (g_job == J_LIST) job_list();
+  if (g_job == J_CHECK) {
+    char now[sizeof g_etag];
+    bool ok = fetch_etag(now, sizeof now);
+    LightLock_Lock(&g_lock);
+    g_st.offline = !ok;
+    g_st.net_code = g_net_code;
+    g_st.http_code = g_http_code;
+    touch();
+    LightLock_Unlock(&g_lock);
+    if (!ok) alog("Translations: the share did not answer the quick check (curl %d, HTTP %ld)", g_net_code, g_http_code);
+    if (!ok || (g_etag[0] && !strcmp(now, g_etag))) goto cleanup; /* unreachable or unchanged: keep the saved list */
+    LightLock_Lock(&g_lock);
+    g_st.list_requests = 0;
+    g_st.error = TRE_NONE;
+    g_st.offline = false;
+    g_st.state = TRS_LISTING;
+    touch();
+    LightLock_Unlock(&g_lock);
+    snprintf(g_etag, sizeof g_etag, "%s", now);
+    job_list();
+  } else if (g_job == J_LIST) {
+    if (!fetch_etag(g_etag, sizeof g_etag)) g_etag[0] = '\0';
+    job_list();
+  }
   else if (g_job == J_PREPARE) job_prepare();
   else if (g_prep_uninstall) job_uninstall();
   else job_install();
@@ -1394,11 +1463,13 @@ void tr_list(bool force) {
   if (!force && load_cache()) {
     tr_refresh_marks();
     set_state(TRS_READY);
+    start(J_CHECK);
     return;
   }
   LightLock_Lock(&g_lock);
   g_st.list_requests = 0;
   g_st.error = TRE_NONE;
+  g_st.offline = false;
   g_st.state = TRS_LISTING;
   touch();
   LightLock_Unlock(&g_lock);

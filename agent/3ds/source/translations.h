@@ -24,6 +24,7 @@ typedef enum { TRE_NONE, TRE_NET, TRE_NOFILES, TRE_BADPATH, TRE_TOOBIG, TRE_SPAC
 
 typedef struct {
   trs_state state;
+  bool offline;           /* the quick check on opening could not reach the share: the saved list is on screen (net_code / http_code say why) */
   unsigned revision;      /* bumps on every change */
   int job;                /* 0 install, 1 uninstall */
   int pack;               /* index in the catalog */

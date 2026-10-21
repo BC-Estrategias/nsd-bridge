@@ -31,6 +31,7 @@ static ins_status g_st;
 static Thread g_worker;
 static bool g_init, g_busy;
 static volatile bool g_cancel, g_answered, g_confirmed;
+static volatile bool g_user_cancel; /* the person pressed cancel (closing the app also stops the job, but keeps the pieces for a resume) */
 static char g_src[1100];
 static bool g_is_url, g_have_expect, g_have_seed;
 static uint8_t g_expect[32], g_seed[16]; /* g_seed: given with the request (the page's optional field) */
@@ -158,10 +159,27 @@ static void writer_thread(void *arg) {
   }
 }
 
+/* While the system's title manager holds an install open, the HOME menu waits for it and the whole console hangs: HOME stays off from
+ * the moment the install is opened until the job ends. Downloading does not hold it, so HOME (and closing the app, which keeps the
+ * pieces for a resume) works during the download. */
+static bool g_home_locked, g_home_prev;
+static void home_lock(void) {
+  if (g_home_locked) return;
+  g_home_prev = aptIsHomeAllowed();
+  aptSetHomeAllowed(false);
+  g_home_locked = true;
+}
+static void home_unlock(void) {
+  if (!g_home_locked) return;
+  aptSetHomeAllowed(g_home_prev);
+  g_home_locked = false;
+}
+
 static bool sink_open(sink *k, const cia_info *ci, int replaces) {
   Result rc;
   int i;
   s32 prio = 0x30;
+  home_lock();
   k->dest = ci->on_nand ? MEDIATYPE_NAND : MEDIATYPE_SD;
   k->total = ci->total_size;
   ndp_sha256_init(&k->sha);
@@ -825,7 +843,7 @@ out:
   return result;
 }
 
-static bool user_cancelled(void) { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE); }
+static bool user_cancelled(void) { return __atomic_load_n(&g_user_cancel, __ATOMIC_ACQUIRE); }
 static void install_from_file(const char *path);
 
 /* The whole piecewise path. Returns true when it handled the install (done or failed), false to use direct streaming. */
@@ -913,7 +931,8 @@ static void dl_sweep(bool all) {
     if (!mine) continue; /* only files this feature wrote */
     snprintf(path, sizeof path, DL_DIR "/%s", e->d_name);
     if (stat(path, &sb) != 0) continue;
-    if (all || (now > sb.st_mtime && (now - sb.st_mtime) > (time_t)DL_KEEP_DAYS * 86400)) remove(path);
+    /* the card's stat gives no modification time here (0), so "older than a week" is only trusted when there is a real date */
+    if (all || (sb.st_mtime > 86400 * 365 && now > sb.st_mtime && (now - sb.st_mtime) > (time_t)DL_KEEP_DAYS * 86400)) remove(path);
   }
   closedir(d);
 }
@@ -1142,15 +1161,13 @@ static void run_job(void *arg) {
   wait_answer();
   if (cancelled() || !g_confirmed) { set_state(INS_IDLE); goto done; }
   {
-    /* While the system's title manager holds the install open, the HOME menu waits for it and the whole console hangs: HOME and
-     * sleep stay off until the install ends (the updater does the same). */
-    bool home = aptIsHomeAllowed(), sleep_ok = aptIsSleepAllowed();
-    aptSetHomeAllowed(false);
+    /* sleep stays off for the whole job; HOME only from the moment the install is opened (see home_lock) */
+    bool sleep_ok = aptIsSleepAllowed();
     aptSetSleepAllowed(false);
     if (g_is_url) { if (!download_and_install()) install_from_url(); }
     else install_from_file(g_src);
     aptSetSleepAllowed(sleep_ok);
-    aptSetHomeAllowed(home);
+    home_unlock();
   }
 done:
   if (curl_ready) curl_global_cleanup();
@@ -1172,6 +1189,7 @@ static bool begin(const char *src, bool is_url, const uint8_t *sha256, const uin
   g_have_seed = seed != NULL;
   if (seed) memcpy(g_seed, seed, 16);
   __atomic_store_n(&g_cancel, false, __ATOMIC_RELEASE);
+  __atomic_store_n(&g_user_cancel, false, __ATOMIC_RELEASE);
   g_answered = false;
   g_confirmed = false;
   LightLock_Lock(&g_lock);
@@ -1204,7 +1222,7 @@ void installer_confirm(bool yes) {
   g_confirmed = yes;
   g_answered = true;
 }
-void installer_cancel(void) { __atomic_store_n(&g_cancel, true, __ATOMIC_RELEASE); g_answered = true; }
+void installer_cancel(void) { __atomic_store_n(&g_user_cancel, true, __ATOMIC_RELEASE); __atomic_store_n(&g_cancel, true, __ATOMIC_RELEASE); g_answered = true; }
 void installer_dismiss(void) {
   ins_status st;
   installer_get(&st);
@@ -1212,7 +1230,8 @@ void installer_dismiss(void) {
 }
 void installer_shutdown(void) {
   if (!g_init) return;
-  installer_cancel();
+  __atomic_store_n(&g_cancel, true, __ATOMIC_RELEASE); /* not installer_cancel(): closing the app is not a cancel, the pieces stay */
+  g_answered = true;
   if (g_worker) { threadJoin(g_worker, UINT64_MAX); threadFree(g_worker); g_worker = NULL; }
   g_init = false;
 }
