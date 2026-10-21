@@ -20,6 +20,8 @@ static char link_msg[64];
 
 void uitr_set_message(const char *m) { snprintf(link_msg, sizeof link_msg, "%s", m ? m : ""); }
 
+static const char *kind_title(void) { return tr_kind() == 1 ? "Mods" : UI_T("Translations", "Traduções"); }
+
 static const char *lang_label(const char *l) {
   if (!strcmp(l, "ptbr")) return "PT-BR";
   if (!strcmp(l, "en")) return "EN";
@@ -48,6 +50,7 @@ static void view_rebuild(void) {
       const tr_pack *q = tr_at(i - 1);
       if (!strcmp(p->ref.lang, q->ref.lang) && !strcmp(p->ref.id, q->ref.id) && !strcmp(p->ref.team, q->ref.team)) continue;
     }
+    if (tr_kind() == 1 && lang_filter > 0) continue;
     if (lang_filter > 0 && strcmp(p->ref.lang, langs[lang_filter - 1]) != 0) continue;
     view[nview++] = i;
   }
@@ -58,7 +61,9 @@ static void view_rebuild(void) {
   if (top < 0) top = 0;
 }
 
-void uitr_open(void) {
+void uitr_open(int kind) {
+  tr_select(kind);
+  lang_filter = 0;
   st = TX_LIST;
   sel = top = 0;
   nview = 0;
@@ -127,7 +132,7 @@ ui_action uitr_handle(u32 down, u32 held, const touchPosition *touch, bool *redr
   }
   /* the list */
   if ((down & (KEY_B | KEY_START)) || ((down & KEY_TOUCH) && tap_in(touch, 0, 20, 320, 40))) { *leave = true; *redraw = true; return UI_NONE; }
-  if (down & KEY_X) { lang_filter = (lang_filter + 1) % (n_langs + 1); sel = top = 0; view_rebuild(); *redraw = true; return UI_NONE; }
+  if ((down & KEY_X) && tr_kind() == 0) { lang_filter = (lang_filter + 1) % (n_langs + 1); sel = top = 0; view_rebuild(); *redraw = true; return UI_NONE; }
   if (down & KEY_Y) { tr_list(true); *redraw = true; return UI_NONE; }
   if (down & KEY_SELECT) { *redraw = true; return UI_TR_LINK; }
   max = nview > UI_LIST_ROWS ? nview - UI_LIST_ROWS : 0;
@@ -170,7 +175,7 @@ static void top_header(const ui_model *m) {
   ui_scene_top(COL_TOP_BG);
   ui_rect(0, 0, 400, 24, COL_TOP_HDR);
   ui_text(8, 3, 0.6f, COL_CYAN, 0, "NSD Bridge");
-  ui_text(392, 5, 0.45f, m->build_tag[0] ? COL_YELLOW : COL_DIM, UI_RIGHT, "%s  v%s%s%s", UI_T("Translations", "Traduções"), m->version, m->build_tag[0] ? " " : "", m->build_tag);
+  ui_text(392, 5, 0.45f, m->build_tag[0] ? COL_YELLOW : COL_DIM, UI_RIGHT, "%s  v%s%s%s", tr_kind() == 1 ? "Mods" : UI_T("Translations", "Traduções"), m->version, m->build_tag[0] ? " " : "", m->build_tag);
 }
 
 static void button(float x, float y, uint32_t col, const char *label) {
@@ -179,20 +184,59 @@ static void button(float x, float y, uint32_t col, const char *label) {
 }
 
 static const char *mark_text(const tr_pack *p) {
-  return p->update ? "\xE2\x86\x91" : p->mark == 2 ? "\xE2\x98\x85" : p->mark == 1 ? "\xE2\x98\x86" : " "; /* up arrow, filled star, empty star */
+  return p->mark == 3 ? "!" : p->update ? "\xE2\x86\x91" : p->mark == 2 ? "\xE2\x98\x85" : p->mark == 1 ? "\xE2\x98\x86" : " "; /* up arrow, filled star, empty star */
+}
+
+/* Draws s in lines of about `cols` characters, breaking at spaces; returns the y after the last line. */
+static float draw_wrapped(float x, float y, float scale, uint32_t col, int cols, int max_lines, const char *s) {
+  int lines = 0;
+  while (*s && lines < max_lines) {
+    int n = (int)strlen(s), cut;
+    char line[100];
+    if (n > cols) {
+      cut = cols;
+      while (cut > cols / 2 && s[cut] != ' ') cut--;
+      if (s[cut] != ' ') cut = cols;
+    } else {
+      cut = n;
+    }
+    if (cut > (int)sizeof line - 1) cut = (int)sizeof line - 1;
+    memcpy(line, s, (size_t)cut);
+    line[cut] = '\0';
+    if (lines == max_lines - 1 && s[cut] != '\0') { /* the last line that fits: mark that the text goes on */
+      if (cut > 3) { line[cut - 3] = '.'; line[cut - 2] = '.'; line[cut - 1] = '.'; }
+    }
+    ui_text(x, y, scale, col, 0, "%s", line);
+    y += scale * 34.0f;
+    s += cut;
+    while (*s == ' ') s++;
+    lines++;
+  }
+  return y;
 }
 
 static void draw_pack_details(const tr_pack *p) {
   float y = 36;
   ui_text(12, y, 0.55f, COL_WHITE, 0, "%.38s", p->ref.game);
-  y += 24;
-  ui_text(12, y, 0.42f, COL_WHITE, 0, "ID  %s", p->ref.id);
-  y += 16;
-  ui_text(12, y, 0.42f, COL_WHITE, 0, "%s  %s    %s  %s", UI_T("Language", "Idioma"), lang_label(p->ref.lang), UI_T("Version", "Versão"), p->ref.version);
-  y += 16;
-  ui_text(12, y, 0.42f, COL_WHITE, 0, "%s  %.40s", UI_T("Team", "Equipe"), p->ref.team);
   y += 22;
-  if (p->update) ui_text(12, y, 0.45f, COL_YELLOW, 0, "%s %s -> %s", UI_T("Update:", "Atualização:"), p->inst_version, p->ref.version);
+  if (p->kind == 1) {
+    ui_text(12, y, 0.45f, COL_CYAN, 0, "%.34s  %s", p->ref.team, p->ref.version);
+    y += 16;
+    ui_text(12, y, 0.38f, COL_DIM, 0, "ID  %s%s%.20s%s%.12s", p->ref.id, p->author[0] ? "   " : "", p->author, p->region[0] ? "   " : "", p->region);
+    y += 15;
+  } else {
+    ui_text(12, y, 0.42f, COL_WHITE, 0, "ID  %s", p->ref.id);
+    y += 16;
+    ui_text(12, y, 0.42f, COL_WHITE, 0, "%s  %s    %s  %s", UI_T("Language", "Idioma"), lang_label(p->ref.lang), UI_T("Version", "Versão"), p->ref.version);
+    y += 16;
+    ui_text(12, y, 0.42f, COL_WHITE, 0, "%s  %.40s", UI_T("Team", "Equipe"), p->ref.team);
+    y += 16;
+  }
+  if (p->desc[0]) y = draw_wrapped(12, y + 2, 0.4f, COL_WHITE, 62, 3, p->desc);
+  if (p->status[0]) y = draw_wrapped(12, y + 2, 0.38f, COL_YELLOW, 66, 2, p->status);
+  y += 6;
+  if (p->mark == 3) ui_text(12, y, 0.45f, COL_RED, 0, "%s", UI_T("Install did not finish: install it again.", "A instalação não terminou: instale de novo."));
+  else if (p->update) ui_text(12, y, 0.45f, COL_YELLOW, 0, "%s %s -> %s", UI_T("Update:", "Atualização:"), p->inst_version, p->ref.version);
   else if (p->mark == 2) ui_text(12, y, 0.45f, COL_GREEN, 0, "%s %s", UI_T("Installed:", "Instalada:"), p->inst_version);
   else if (p->mark == 1) ui_text(12, y, 0.45f, COL_CYAN, 0, "%s", UI_T("A folder for this game is already there (by hand).", "Já existe uma pasta deste jogo (feita à mão)."));
   else ui_text(12, y, 0.45f, COL_DIM, 0, "%s", UI_T("Not installed.", "Não instalada."));
@@ -228,7 +272,7 @@ void uitr_draw(const ui_model *m) {
     ui_text(200, 110, 0.6f, COL_YELLOW, UI_CENTER, "%s", s.state == TRS_LISTING ? UI_T("Reading the catalog...", "Lendo o catálogo...") : UI_T("Checking the pack...", "Verificando o pacote..."));
     if (s.state == TRS_LISTING) ui_text(200, 140, 0.45f, COL_WHITE, UI_CENTER, "%d %s", s.list_requests, UI_T("requests", "pedidos"));
     ui_scene_bottom(COL_BOT_BG);
-    ui_bottom_chrome(UI_T("Translations", "Traduções"), UI_T("Please wait", "Aguarde"), UI_T("B: Cancel", "B: Cancelar"));
+    ui_bottom_chrome(kind_title(), UI_T("Please wait", "Aguarde"), UI_T("B: Cancel", "B: Cancelar"));
     return;
   }
   if (s.state == TRS_CONFIRM || s.state == TRS_WORKING || s.state == TRS_DONE || (s.state == TRS_ERROR && s.pack >= 0)) {
@@ -250,6 +294,13 @@ void uitr_draw(const ui_model *m) {
         if (s.region[0]) { ui_text(12, y, 0.4f, COL_DIM, 0, "%s: %.20s", UI_T("Region", "Região"), s.region); y += 15; }
         if (s.source[0]) { ui_text(12, y, 0.36f, COL_DIM, 0, "%.62s", s.source); y += 15; }
         if (!un && s.title_known == 2) { ui_text(12, y, 0.4f, COL_YELLOW, 0, "%s", UI_T("This game is not installed on this console.", "Este jogo não está instalado neste console.")); y += 15; }
+        if (!un && p->kind == 1 && s.replaces) {
+          ui_text(12, y, 0.4f, COL_YELLOW, 0, "%u %s", s.replaces, UI_T("existing files will be replaced (a backup is kept).", "arquivos existentes serão substituídos (backup guardado)."));
+          y += 15;
+          if (s.shared) { ui_text(12, y, 0.38f, COL_RED, 0, "%u %s: %.30s", s.shared, UI_T("belong to another installed pack", "são de outro pacote instalado"), s.shared_with); y += 15; }
+        }
+        if (un && p->kind == 1) { ui_text(12, y, 0.38f, COL_CYAN, 0, "%s", UI_T("The originals it replaced come back from the backup.", "Os originais que ele substituiu voltam do backup.")); y += 15; }
+        if (!un && s.status[0]) y = draw_wrapped(12, y, 0.38f, COL_YELLOW, 66, 2, s.status);
         if (!un) { ui_text(12, y, 0.38f, COL_CYAN, 0, "%s", UI_T("Luma: turn on \"Enable game patching\" (SELECT at boot).", "Luma: ligue \"Enable game patching\" (SELECT ao ligar).")); y += 15; }
         if (un && !s.has_record) ui_text(12, y, 0.38f, COL_YELLOW, 0, "%s", UI_T("Made by hand: only files that are in the pack are removed.", "Feita à mão: só os arquivos que estão no pacote são removidos."));
       } else if (s.state == TRS_WORKING) {
@@ -270,14 +321,14 @@ void uitr_draw(const ui_model *m) {
           if (s.eta_s > 0) ui_text(200, 200, 0.42f, COL_CYAN, UI_CENTER, "%s ~%u:%02u", UI_T("Time left", "Tempo restante"), s.eta_s / 60, s.eta_s % 60);
         }
       } else if (s.state == TRS_DONE) {
-        ui_text(200, 130, 0.7f, COL_GREEN, UI_CENTER, "%s", un ? UI_T("Removed", "Removida") : UI_T("Installed", "Instalada"));
+        ui_text(200, 130, 0.7f, COL_GREEN, UI_CENTER, "%s", p->kind == 1 ? (un ? UI_T("Mod removed", "Mod removido") : UI_T("Mod installed", "Mod instalado")) : un ? UI_T("Removed", "Removida") : UI_T("Installed", "Instalada"));
         if (un) ui_text(200, 156, 0.42f, COL_WHITE, UI_CENTER, "%u %s", s.removed, UI_T("files removed", "arquivos removidos"));
-        else ui_text(200, 156, 0.4f, COL_CYAN, UI_CENTER, "%s", UI_T("Open the game with \"Enable game patching\" on in Luma.", "Abra o jogo com \"Enable game patching\" ligado no Luma."));
+        else ui_text(200, 156, 0.4f, COL_CYAN, UI_CENTER, "%s", p->kind == 1 ? UI_T("Back up the save, then open the game (game patching on).", "Faça backup do save e abra o jogo (game patching ligado).") : UI_T("Open the game with \"Enable game patching\" on in Luma.", "Abra o jogo com \"Enable game patching\" ligado no Luma."));
       }
     }
     if (s.state == TRS_ERROR) ui_text(200, 150, 0.45f, COL_RED, UI_CENTER, "%.70s", err_text(&s));
     ui_scene_bottom(COL_BOT_BG);
-    ui_bottom_chrome(UI_T("Translations", "Traduções"),
+    ui_bottom_chrome(kind_title(),
                      s.state == TRS_CONFIRM ? (un ? UI_T("Remove this translation?", "Remover esta tradução?") : UI_T("Install this translation?", "Instalar esta tradução?")) :
                      s.state == TRS_WORKING ? (un ? UI_T("Removing", "Removendo") : UI_T("Installing", "Instalando")) : s.state == TRS_DONE ? UI_T("Done", "Concluído") : UI_T("Failed", "Falhou"),
                      s.state == TRS_CONFIRM ? UI_T("A: Yes   B: Cancel", "A: Sim   B: Cancelar") : s.state == TRS_WORKING ? UI_T("B: Cancel", "B: Cancelar") : "A / B: OK");
@@ -294,7 +345,7 @@ void uitr_draw(const ui_model *m) {
   if (s.state == TRS_ERROR) { /* a listing failure */
     ui_text(200, 110, 0.5f, COL_RED, UI_CENTER, "%.70s", err_text(&s));
     ui_scene_bottom(COL_BOT_BG);
-    ui_bottom_chrome(UI_T("Translations", "Traduções"), UI_T("Failed", "Falhou"), "A / B: OK");
+    ui_bottom_chrome(kind_title(), UI_T("Failed", "Falhou"), "A / B: OK");
     button(88, 160, UI_RGB(0x42, 0x7a, 0xb8), "OK");
     return;
   }
@@ -304,7 +355,7 @@ void uitr_draw(const ui_model *m) {
     ui_text(12, 66, 0.4f, COL_DIM, 0, "%s", UI_T("Paste the public link of your Nextcloud folder", "Cole o link público da sua pasta do Nextcloud"));
     ui_text(12, 82, 0.4f, COL_DIM, 0, "%s", UI_T("(https://.../s/xxxxxxx) with a traducoes/ folder.", "(https://.../s/xxxxxxx) com uma pasta traducoes/."));
     ui_scene_bottom(COL_BOT_BG);
-    ui_bottom_chrome(UI_T("Translations", "Traduções"), UI_T("< Back  (B)", "< Voltar  (B)"), UI_T("A: Type the link", "A: Digitar o link"));
+    ui_bottom_chrome(kind_title(), UI_T("< Back  (B)", "< Voltar  (B)"), UI_T("A: Type the link", "A: Digitar o link"));
     button(85, 90, UI_RGB(0x4c, 0xaf, 0x50), UI_T("A: Link", "A: Link"));
     if (link_msg[0]) ui_text(160, 160, 0.42f, COL_INK_RED, UI_CENTER, "%s", link_msg);
     return;
@@ -316,7 +367,7 @@ void uitr_draw(const ui_model *m) {
     else ui_text(200, 110, 0.5f, COL_DIM, UI_CENTER, "%s", UI_T("No translations here (Y: refresh).", "Nenhuma tradução aqui (Y: atualizar)."));
     ui_scene_bottom(COL_BOT_BG);
     if (st == TX_ACTIONS && p) {
-      ui_bottom_chrome(UI_T("Translations", "Traduções"), p->ref.game, UI_T("A: Select   B: Back", "A: Selecionar   B: Voltar"));
+      ui_bottom_chrome(kind_title(), p->ref.game, UI_T("A: Select   B: Back", "A: Selecionar   B: Voltar"));
       for (i = 0; i < n_act; i++) {
         const char *lab = act_rows[i] == ACT_UNINSTALL ? UI_T("Uninstall", "Desinstalar") : p->update ? UI_T("Update", "Atualizar") : p->mark == 2 ? UI_T("Reinstall", "Reinstalar") : UI_T("Install", "Instalar");
         ui_list_row(i, act_sel, 0, lab, "", act_rows[i] == ACT_UNINSTALL ? COL_INK_RED : COL_INK);
@@ -324,11 +375,12 @@ void uitr_draw(const ui_model *m) {
       return;
     }
     snprintf(line, sizeof line, "< %s (%d)", lang_filter == 0 ? UI_T("All languages", "Todos os idiomas") : lang_label(langs[lang_filter - 1]), nview);
-    ui_bottom_chrome(UI_T("Translations", "Traduções"), line, UI_T("A:Open X:Lang Y:Refresh SEL:Link", "A:Abrir X:Idioma Y:Atualizar SEL:Link"));
+    ui_bottom_chrome(kind_title(), line, tr_kind() == 1 ? UI_T("A:Open  Y:Refresh  SEL:Link", "A:Abrir  Y:Atualizar  SEL:Link") : UI_T("A:Open X:Lang Y:Refresh SEL:Link", "A:Abrir X:Idioma Y:Atualizar SEL:Link"));
     for (i = top; i < nview && i < top + UI_LIST_ROWS; i++) {
       const tr_pack *q = tr_at(view[i]);
       char nm[140];
-      snprintf(nm, sizeof nm, "%s %.32s", mark_text(q), q->ref.game);
+      if (q->kind == 1) snprintf(nm, sizeof nm, "%s %.16s - %.18s", mark_text(q), q->ref.team, q->ref.game);
+      else snprintf(nm, sizeof nm, "%s %.32s", mark_text(q), q->ref.game);
       snprintf(val, sizeof val, "%s", q->ref.version); /* the team is in the panel above: the name needs the room */
       ui_list_row(i, sel, top, nm, val, q->mark == 0 ? COL_INK : COL_INK_GREEN);
     }

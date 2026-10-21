@@ -36,6 +36,12 @@ endif
 # Without it the one line of default-translations-url is used (a READ-ONLY link: it ends up inside the app); NDEV_TRANSLATIONS_URL= (empty) builds without one.
 NDEV_TRANSLATIONS_URL ?= $(shell cat default-translations-url 2>/dev/null)
 export NDEV_TRANSLATIONS_URL
+# the same for the mods catalog (a READ-ONLY link too); NDEV_MODS_URL= (empty) builds without one
+NDEV_MODS_URL ?= $(shell cat default-mods-url 2>/dev/null)
+export NDEV_MODS_URL
+ifneq ($(strip $(NDEV_MODS_URL)),)
+CFLAGS  += -DNSD_DEFAULT_MODS_URL=\"$(NDEV_MODS_URL)\"
+endif
 ifneq ($(strip $(NDEV_TRANSLATIONS_URL)),)
 CFLAGS  += -DNSD_DEFAULT_TRANSLATIONS_URL=\"$(NDEV_TRANSLATIONS_URL)\"
 endif

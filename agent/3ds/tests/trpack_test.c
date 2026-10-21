@@ -87,6 +87,10 @@ int main(int argc, char **argv) {
   assert(!tr_parse_ref("ptbr", "00040000000FC500 - X", "t", "v1.0-beta", &r));
   assert(!tr_parse_ref("ptbr", "00040000000FC500 - X", "", "v1", &r));
 
+  /* a mod is listed as lang "mod", with the mod folder as the team */
+  assert(tr_parse_ref("mod", "0004000000033500 - The Legend of Zelda Ocarina of Time 3D", "quick-gear", "v2", &r));
+  assert(!strcmp(r.lang, "mod") && !strcmp(r.team, "quick-gear") && !strcmp(r.id, "0004000000033500") && !strcmp(r.version, "v2"));
+
   /* versions compare by number, not by text */
   assert(tr_version_cmp("v1.10", "v1.9") > 0 && tr_version_cmp("v1.9", "v1.10") < 0);
   assert(tr_version_cmp("v2", "v2.0") == 0 && tr_version_cmp("v1.2.1", "v1.2") > 0 && tr_version_cmp("v1.2", "v1.2") == 0);

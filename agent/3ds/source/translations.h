@@ -11,6 +11,8 @@
 
 typedef struct {
   tr_ref ref;
+  char desc[160], status[100], author[48], region[20]; /* from pacote.json: a short description, a warning, the team or author, the region */
+  int kind;              /* 0 translation, 1 mod (for a mod, ref.lang is "mod" and ref.team is the mod's folder name) */
   char path[320];        /* on the share, e.g. "traducoes/ptbr/0004000000125500 - Name/team/v1.0" */
   int mark;              /* 0 none, 1 a folder exists in /luma/titles/<ID> put there by hand, 2 installed by NSD Bridge */
   char inst_version[16]; /* mark 2: the installed version */
@@ -27,6 +29,9 @@ typedef struct {
   int pack;               /* index in the catalog */
   int list_requests;      /* while listing: requests made so far */
   char team[64], region[24], source[200];   /* from pacote.json, may be empty */
+  char status[100];       /* pacote.json "status": a warning to show (e.g. experimental) */
+  unsigned replaces, shared;   /* a mod: files it will replace (backed up), and how many of them belong to another installed pack */
+  char shared_with[48];
   int title_known;        /* 0 unknown, 1 installed on this console, 2 not installed */
   unsigned files_total, files_done;
   uint64_t bytes_total, bytes_done;
@@ -40,6 +45,8 @@ typedef struct {
 } tr_status;
 
 void tr_init(void);
+void tr_select(int kind);                    /* 0 translations, 1 mods: the catalog the other calls act on */
+int tr_kind(void);
 void tr_shutdown(void);
 
 bool tr_configured(void);

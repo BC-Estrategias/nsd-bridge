@@ -119,7 +119,7 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 
 /* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
 /* the main menu: START leaves the app, so there is no "Exit" row; the rarely used rows live under Settings */
-enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_INSTALLER, IT_COUNT };
+enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_MODS, IT_INSTALLER, IT_COUNT };
 enum { SS_FOLDERS, SS_MODE, SS_PAIRING, SS_LOG, SS_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
 enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SEEDS, SI_COUNT };
@@ -132,6 +132,7 @@ static const char *item_name(int i) {
     case IT_SETTINGS: return UI_T("Settings", "Configurações");
     case IT_TITLES: return UI_T("Titles", "Títulos");
     case IT_TRANSL: return UI_T("Translations", "Traduções");
+    case IT_MODS: return "Mods";
     default: return UI_T("Installer", "Instalador");
   }
 }
@@ -174,7 +175,8 @@ static ui_action activate(const ui_model *m) {
       case IT_SETTINGS: g_sel[SCR_SETTINGS] = 0; go(SCR_SETTINGS); return UI_NONE;
       case IT_INSTALLER: go(SCR_INST); return UI_NONE;
       case IT_TITLES: uit_open(); go(SCR_TITLES); return UI_NONE;
-      case IT_TRANSL: uitr_open(); go(SCR_TRANSL); return UI_NONE;
+      case IT_TRANSL: uitr_open(0); go(SCR_TRANSL); return UI_NONE;
+      case IT_MODS: uitr_open(1); go(SCR_TRANSL); return UI_NONE;
       default: break;
     }
     return UI_NONE;

@@ -6,6 +6,7 @@
 
 #include <3ds.h>
 #include <curl/curl.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,14 +19,11 @@
 #include "nettune.h"
 #include "ndp/ndp_defs.h"
 
-#define CONFIG_PATH "sdmc:/3ds/nintendo-dev-agent/config/translations-url"
 #define CACHE_DIR "sdmc:/3ds/nintendo-dev-agent/cache"
-#define CACHE_PATH CACHE_DIR "/translations.txt"
 #define MAX_PACKS 512
 #define MAX_FILES 20000u
 #define MAX_BYTES (1536ull * 1024ull * 1024ull)
 #define SPACE_MARGIN (16ull * 1024ull * 1024ull)
-#define ROOT "traducoes"
 #define IO_SIZE (128u * 1024u)
 
 extern const char nsd_ca_pem[], nsd_ca_pem_end[]; /* the Mozilla CA bundle, linked in by updater.c */
@@ -35,14 +33,35 @@ static Thread g_worker;
 #ifndef NSD_DEFAULT_TRANSLATIONS_URL
 #define NSD_DEFAULT_TRANSLATIONS_URL ""
 #endif
-static bool g_init, g_busy, g_link_default;
+#ifndef NSD_DEFAULT_MODS_URL
+#define NSD_DEFAULT_MODS_URL ""
+#endif
+static bool g_init, g_busy;
 /* The share either contains a traducoes/ folder or IS that folder: g_root is "traducoes" or "" (paths are always from the share's root). */
-static char g_root[16];
 static tr_status g_st;
-static tr_pack *g_packs;
-static int g_np;
-static char g_link[300], g_base[200], g_token[80];
-static bool g_cfg;
+/* Two catalogs share the engine: translations (KIND_TRANSL: <lang>/<ID - game>/<team>/<version>) and mods (KIND_MOD:
+ * <ID - game>/<mod>/<version>). Each has its own link, saved copy, packs and records; only one is active at a time. */
+typedef struct {
+  const char *root_name, *cfg_path, *cache_path, *default_url;
+  tr_pack *packs;
+  int np;
+  char link[300], base[200], token[80];
+  bool cfg_ok, is_default;
+  char root[16]; /* "" or root_name, whichever the share turned out to use */
+} kind_t;
+static kind_t K[2];
+static int g_kind;
+#define g_packs (K[g_kind].packs)
+#define g_np (K[g_kind].np)
+#define g_link (K[g_kind].link)
+#define g_base (K[g_kind].base)
+#define g_token (K[g_kind].token)
+#define g_cfg (K[g_kind].cfg_ok)
+#define g_link_default (K[g_kind].is_default)
+#define g_root (K[g_kind].root)
+#define CONFIG_PATH (K[g_kind].cfg_path)
+#define CACHE_PATH (K[g_kind].cache_path)
+#define ROOT (K[g_kind].root_name)
 static volatile bool g_cancel, g_answered, g_confirmed;
 
 /* what tr_prepare gathered: the files of the pack, as paths relative to arquivos/ */
@@ -50,6 +69,7 @@ typedef struct { uint32_t off; uint64_t size; } fent;
 static char *g_pool;
 static size_t g_pool_n, g_pool_cap;
 static fent *g_files;
+static uint8_t *g_fflag;
 static unsigned g_nf;
 static int g_prep_pack = -1;
 static bool g_prep_uninstall;
@@ -96,8 +116,8 @@ static void load_config(void) {
       return;
     }
   }
-  if (NSD_DEFAULT_TRANSLATIONS_URL[0] && tr_parse_share(NSD_DEFAULT_TRANSLATIONS_URL, g_base, sizeof g_base, g_token, sizeof g_token)) {
-    snprintf(g_link, sizeof g_link, "%s", NSD_DEFAULT_TRANSLATIONS_URL);
+  if (K[g_kind].default_url[0] && tr_parse_share(K[g_kind].default_url, g_base, sizeof g_base, g_token, sizeof g_token)) {
+    snprintf(g_link, sizeof g_link, "%s", K[g_kind].default_url);
     g_cfg = true;
     g_link_default = true;
   }
@@ -276,6 +296,7 @@ static void add_pack(const tr_ref *r, const char *path) {
   p = &g_packs[g_np++];
   memset(p, 0, sizeof *p);
   p->ref = *r;
+  p->kind = g_kind;
   snprintf(p->path, sizeof p->path, "%s", path);
 }
 
@@ -292,6 +313,29 @@ static int cmp_pack(const void *a, const void *b) {
   return -tr_version_cmp(x->ref.version, y->ref.version);
 }
 
+/* The few lines the lists show under each pack come from its pacote.json (one small request each, kept in the saved catalog). */
+static void clean_field(char *t) { for (; *t; t++) if (*t == '\t' || *t == '\n' || *t == '\r') *t = ' '; }
+static void fetch_meta_all(void) {
+  static char path[420], tmp[200];
+  int i;
+  for (i = 0; i < g_np && !cancelled(); i++) {
+    tr_pack *p = &g_packs[i];
+    buf b = {0, 0, 0, 8191, false};
+    snprintf(path, sizeof path, "%s/pacote.json", p->path);
+    LightLock_Lock(&g_lock);
+    g_st.list_requests++;
+    touch();
+    LightLock_Unlock(&g_lock);
+    if (http("GET", path, NULL, NULL, sink_buf, &b) && b.p) {
+      if (tr_json_get(b.p, "descricao", tmp, sizeof tmp)) { snprintf(p->desc, sizeof p->desc, "%s", tmp); clean_field(p->desc); }
+      if (tr_json_get(b.p, "status", tmp, sizeof tmp)) { snprintf(p->status, sizeof p->status, "%s", tmp); clean_field(p->status); }
+      if (tr_json_get(b.p, p->kind == 1 ? "autor" : "equipe", tmp, sizeof tmp)) { snprintf(p->author, sizeof p->author, "%s", tmp); clean_field(p->author); }
+      if (tr_json_get(b.p, "regiao", tmp, sizeof tmp)) { snprintf(p->region, sizeof p->region, "%s", tmp); clean_field(p->region); }
+    }
+    free(b.p);
+  }
+}
+
 static void save_cache(void) {
   FILE *f;
   int i;
@@ -299,7 +343,9 @@ static void save_cache(void) {
   f = fopen(CACHE_PATH, "wb");
   if (!f) return;
   fprintf(f, "# %s\n@ %s\n", g_link, g_root);
-  for (i = 0; i < g_np; i++) fprintf(f, "%s\t%s - %s\t%s\t%s\n", g_packs[i].ref.lang, g_packs[i].ref.id, g_packs[i].ref.game, g_packs[i].ref.team, g_packs[i].ref.version);
+  for (i = 0; i < g_np; i++)
+    fprintf(f, "%s\t%s - %s\t%s\t%s\t%s\t%s\t%s\t%s\n", g_packs[i].ref.lang, g_packs[i].ref.id, g_packs[i].ref.game, g_packs[i].ref.team, g_packs[i].ref.version,
+            g_packs[i].desc, g_packs[i].status, g_packs[i].author, g_packs[i].region);
   fclose(f);
 }
 
@@ -327,6 +373,7 @@ static bool load_cache(void) {
     char *lang = line, *idn, *team, *ver, *e;
     tr_ref r;
     static char path[320];
+    char *meta_fields[4] = {NULL, NULL, NULL, NULL};
     size_t l = strlen(line);
     while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
     idn = strchr(lang, '\t');
@@ -339,18 +386,81 @@ static bool load_cache(void) {
     if (!ver) continue;
     *ver++ = '\0';
     e = strchr(ver, '\t');
-    if (e) *e = '\0';
+    if (e) *e++ = '\0';
     if (!tr_parse_ref(lang, idn, team, ver, &r)) continue;
-    if (g_root[0]) snprintf(path, sizeof path, "%s/%s/%s/%s/%s", g_root, lang, idn, team, ver);
+    {
+      char *fields[4] = {e, NULL, NULL, NULL}; /* description, status, author, region (older saved copies have none) */
+      int fi;
+      for (fi = 0; fi < 3 && fields[fi]; fi++) { char *t = strchr(fields[fi], '\t'); if (t) *t++ = '\0'; fields[fi + 1] = t; }
+      memcpy(meta_fields, fields, sizeof fields);
+    }
+    if (g_kind == 1) { /* a mod: <ID - game>/<mod>/<version> */
+      if (g_root[0]) snprintf(path, sizeof path, "%s/%s/%s/%s", g_root, idn, team, ver);
+      else snprintf(path, sizeof path, "%s/%s/%s", idn, team, ver);
+    } else if (g_root[0]) snprintf(path, sizeof path, "%s/%s/%s/%s/%s", g_root, lang, idn, team, ver);
     else snprintf(path, sizeof path, "%s/%s/%s/%s", lang, idn, team, ver);
     add_pack(&r, path);
+    if (g_np > 0) {
+      tr_pack *np = &g_packs[g_np - 1];
+      if (meta_fields[0]) snprintf(np->desc, sizeof np->desc, "%s", meta_fields[0]);
+      if (meta_fields[1]) snprintf(np->status, sizeof np->status, "%s", meta_fields[1]);
+      if (meta_fields[2]) snprintf(np->author, sizeof np->author, "%s", meta_fields[2]);
+      if (meta_fields[3]) snprintf(np->region, sizeof np->region, "%s", meta_fields[3]);
+    }
   }
   fclose(f);
   if (!ok) g_np = 0;
   return ok && g_np > 0;
 }
 
+/* The mods catalog: <ID - game>/<mod>/<version>, three levels under the root. */
+static void job_list_mods(void) {
+  static char p1[420], p2[420], path[420];
+  static dav_entry games[ES_MAX], mods[ES_MAX];
+  int nr, ng, nm, nv, i, g, m, v;
+  g_np = 0;
+  nr = list_dir("");
+  if (nr < 0) { net_fail("listing"); return; }
+  g_root[0] = '\0';
+  for (i = 0; i < nr; i++) if (g_es[i].is_dir && !strcmp(g_es[i].name, ROOT)) snprintf(g_root, sizeof g_root, "%s", ROOT);
+  if (g_root[0]) {
+    ng = list_dir(g_root);
+    if (ng < 0) { net_fail("listing"); return; }
+  } else {
+    ng = nr;
+  }
+  memcpy(games, g_es, sizeof games[0] * (size_t)(ng < ES_MAX ? ng : ES_MAX));
+  for (g = 0; g < ng && !cancelled(); g++) {
+    if (!games[g].is_dir) continue;
+    if (g_root[0]) snprintf(p1, sizeof p1, "%s/%s", g_root, games[g].name);
+    else snprintf(p1, sizeof p1, "%s", games[g].name);
+    nm = list_dir(p1);
+    if (nm < 0) { net_fail("listing"); return; }
+    memcpy(mods, g_es, sizeof mods[0] * (size_t)nm);
+    for (m = 0; m < nm && !cancelled(); m++) {
+      if (!mods[m].is_dir) continue;
+      snprintf(p2, sizeof p2, "%s/%s", p1, mods[m].name);
+      nv = list_dir(p2);
+      if (nv < 0) { net_fail("listing"); return; }
+      for (v = 0; v < nv; v++) {
+        tr_ref r;
+        if (!g_es[v].is_dir) continue;
+        if (!tr_parse_ref("mod", games[g].name, mods[m].name, g_es[v].name, &r)) continue;
+        snprintf(path, sizeof path, "%s/%s", p2, g_es[v].name);
+        add_pack(&r, path);
+      }
+    }
+  }
+  if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
+  qsort(g_packs, (size_t)g_np, sizeof *g_packs, cmp_pack);
+  fetch_meta_all();
+  save_cache();
+  alog("Mods: %d packs listed (%d requests)", g_np, g_st.list_requests);
+  set_state(TRS_READY);
+}
+
 static void job_list(void) {
+  if (g_kind == 1) { job_list_mods(); return; }
   int nl, l, ng, g, nt, t, nv, v;
   static char p1[420], p2[420], p3[420];
   static dav_entry langs[24];
@@ -401,6 +511,7 @@ static void job_list(void) {
   }
   if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
   qsort(g_packs, (size_t)g_np, sizeof *g_packs, cmp_pack);
+  fetch_meta_all();
   save_cache();
   alog("Translations: %d packs listed (%d requests)", g_np, g_st.list_requests);
   set_state(TRS_READY);
@@ -409,12 +520,31 @@ static void job_list(void) {
 /* ------------------------------------------------------------------------------------------------ marks */
 #define LUMA_TITLES "sdmc:/luma/titles"
 
-static bool read_record(const char *id, char *ver, size_t vcap, char *team, size_t tcap) {
-  static char path[96], head[1024];
-  snprintf(path, sizeof path, LUMA_TITLES "/%s/.nsd-pack.json", id);
+/* A file name made of safe characters from a mod's folder name. */
+static void slug_of(const char *s2, char *out, size_t cap) {
+  size_t o = 0;
+  for (; *s2 && o + 1 < cap && o < 40; s2++) out[o++] = (isalnum((unsigned char)*s2) || *s2 == '-' || *s2 == '_' || *s2 == '.') ? *s2 : '_';
+  out[o] = '\0';
+}
+
+/* Where a pack's record lives. The translation keeps the original name; every mod has its own file, so a translation and
+ * several mods can sit in one title folder, each with its own list of files. */
+static void record_path_of(const char *id, int kind, const char *team, char *out, size_t cap) {
+  if (kind == 0) snprintf(out, cap, LUMA_TITLES "/%s/.nsd-pack.json", id);
+  else {
+    char sl[48];
+    slug_of(team, sl, sizeof sl);
+    snprintf(out, cap, LUMA_TITLES "/%s/.nsd-mod-%s.json", id, sl);
+  }
+}
+
+static bool read_record(const tr_pack *p, char *ver, size_t vcap, char *team, size_t tcap, bool *complete) {
+  static char path[160], head[1024], tmp[8];
+  record_path_of(p->ref.id, p->kind, p->ref.team, path, sizeof path);
   if (!slurp(path, head, sizeof head, NULL)) return false;
   if (ver && !tr_json_get(head, "versao", ver, vcap)) ver[0] = '\0';
   if (team && !tr_json_get(head, "equipe_pasta", team, tcap)) team[0] = '\0';
+  if (complete) *complete = !(tr_json_get(head, "completo", tmp, sizeof tmp) && !strcmp(tmp, "nao"));
   return true;
 }
 
@@ -433,28 +563,30 @@ static bool dir_has_patch(const char *id) {
 void tr_refresh_marks(void) {
   int i, j;
   static char ver[16], team[64];
+  bool complete;
   for (i = 0; i < g_np; i++) {
     tr_pack *p = &g_packs[i];
     p->mark = 0;
     p->update = false;
     p->inst_version[0] = '\0';
-    if (read_record(p->ref.id, ver, sizeof ver, team, sizeof team)) {
-      p->mark = 2;
+    complete = true;
+    if (read_record(p, ver, sizeof ver, team, sizeof team, &complete)) {
+      p->mark = complete ? 2 : 3; /* 3: an install that did not finish */
       snprintf(p->inst_version, sizeof p->inst_version, "%s", ver);
       /* exactly this pack when the team and version match; otherwise this one only counts when it is newer */
       if (!(team[0] ? !strcmp(team, p->ref.team) : true) || strcmp(ver, p->ref.version) != 0) {
         if (tr_version_cmp(p->ref.version, ver) > 0) p->update = true;
         else p->mark = 0;
       }
-    } else if (dir_has_patch(p->ref.id)) {
-      p->mark = 1;
+    } else if (p->kind == 0 && dir_has_patch(p->ref.id)) {
+      p->mark = 1; /* a translation folder somebody put there by hand (a mod has no way to be recognised by hand) */
     }
   }
   /* only the newest pack of an ID offers the update */
   for (i = 0; i < g_np; i++)
     if (g_packs[i].update)
       for (j = 0; j < g_np; j++)
-        if (j != i && g_packs[j].update && !strcmp(g_packs[j].ref.id, g_packs[i].ref.id) && tr_version_cmp(g_packs[j].ref.version, g_packs[i].ref.version) > 0) { g_packs[i].update = false; g_packs[i].mark = 0; break; }
+        if (j != i && g_packs[j].update && !strcmp(g_packs[j].ref.id, g_packs[i].ref.id) && (g_kind == 0 || !strcmp(g_packs[j].ref.team, g_packs[i].ref.team)) && tr_version_cmp(g_packs[j].ref.version, g_packs[i].ref.version) > 0) { g_packs[i].update = false; g_packs[i].mark = 0; break; }
 }
 
 /* ------------------------------------------------------------------------------------------------ prepare */
@@ -561,14 +693,14 @@ static int title_known(const char *id_hex) {
 }
 
 /* The files of an installed pack, from the record it left. */
-static bool load_record_files(const char *id) {
-  static char path[96];
+static bool load_record_files(const tr_pack *pk) {
+  static char path[160];
   char *txt;
   const char *p;
   static char rel[220];
   FILE *f;
   long size;
-  snprintf(path, sizeof path, LUMA_TITLES "/%s/.nsd-pack.json", id);
+  record_path_of(pk->ref.id, pk->kind, pk->ref.team, path, sizeof path);
   f = fopen(path, "rb");
   if (!f) return false;
   fseek(f, 0, SEEK_END);
@@ -584,6 +716,89 @@ static bool load_record_files(const char *id) {
   while (p && tr_json_array_next(&p, rel, sizeof rel)) if (tr_path_ok(rel)) pool_add(rel, 0);
   free(txt);
   return g_nf > 0;
+}
+
+static int cmp_ptr(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+/* The file list of one record on the card (a copy of every string, sorted), or NULL. */
+static char **read_list(const char *path, unsigned *n) {
+  char *txt, **v = NULL;
+  const char *p;
+  static char rel[220];
+  FILE *f = fopen(path, "rb");
+  long size;
+  unsigned cap = 0;
+  *n = 0;
+  if (!f) return NULL;
+  fseek(f, 0, SEEK_END);
+  size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (size <= 0 || size > 4 * 1024 * 1024) { fclose(f); return NULL; }
+  txt = malloc((size_t)size + 1);
+  if (!txt) { fclose(f); return NULL; }
+  txt[fread(txt, 1, (size_t)size, f)] = '\0';
+  fclose(f);
+  p = tr_json_array(txt, "arquivos");
+  while (p && tr_json_array_next(&p, rel, sizeof rel)) {
+    if (*n >= cap) { char **nv; cap = cap ? cap * 2 : 64; nv = realloc(v, cap * sizeof *v); if (!nv) break; v = nv; }
+    v[*n] = strdup(rel);
+    if (v[*n]) (*n)++;
+  }
+  free(txt);
+  if (v) qsort(v, *n, sizeof *v, cmp_ptr);
+  return v;
+}
+static void free_list(char **v, unsigned n) { unsigned i; for (i = 0; i < n; i++) free(v[i]); free(v); }
+
+/* Before a mod is installed: how many of its files already exist (they will be backed up) and whether another pack that is
+ * installed here wrote some of them (a translation, or another mod). */
+static void scan_conflicts(const tr_pack *pk) {
+  static char base[96], path[330], own[160];
+  unsigned i, replaces = 0, shared = 0, n_own = 0;
+  char **own_list;
+  uint8_t *exists = calloc(g_nf ? g_nf : 1, 1);
+  DIR *d;
+  struct dirent *e;
+  struct stat sb;
+  if (!exists) return;
+  snprintf(base, sizeof base, LUMA_TITLES "/%s", pk->ref.id);
+  record_path_of(pk->ref.id, pk->kind, pk->ref.team, own, sizeof own);
+  own_list = read_list(own, &n_own); /* files of this same mod from an earlier install do not count as conflicts */
+  for (i = 0; i < g_nf; i++) {
+    char *key = (char *)file_at(i);
+    snprintf(path, sizeof path, "%s/%s", base, key);
+    if (stat(path, &sb) != 0) continue;
+    if (own_list && bsearch(&key, own_list, n_own, sizeof *own_list, cmp_ptr)) continue;
+    exists[i] = 1;
+    replaces++;
+  }
+  if (own_list) free_list(own_list, n_own);
+  d = replaces ? opendir(base) : NULL;
+  while (d && (e = readdir(d)) != NULL) {
+    size_t l = strlen(e->d_name);
+    unsigned n2 = 0;
+    char **list;
+    if (strncmp(e->d_name, ".nsd-", 5) != 0 || l < 11 || strcmp(e->d_name + l - 5, ".json") != 0) continue;
+    snprintf(path, sizeof path, "%s/%s", base, e->d_name);
+    if (!strcmp(path, own)) continue;
+    list = read_list(path, &n2);
+    if (!list) continue;
+    for (i = 0; i < g_nf; i++) {
+      char *key = (char *)file_at(i);
+      if (exists[i] && bsearch(&key, list, n2, sizeof *list, cmp_ptr)) {
+        shared++;
+        if (!g_st.shared_with[0]) snprintf(g_st.shared_with, sizeof g_st.shared_with, "%s", strcmp(e->d_name, ".nsd-pack.json") == 0 ? "translation" : e->d_name + 9);
+      }
+    }
+    free_list(list, n2);
+  }
+  if (d) closedir(d);
+  free(exists);
+  LightLock_Lock(&g_lock);
+  g_st.replaces = replaces;
+  g_st.shared = shared;
+  touch();
+  LightLock_Unlock(&g_lock);
 }
 
 static void job_prepare(void) {
@@ -602,6 +817,8 @@ static void job_prepare(void) {
   g_st.bytes_total = g_st.bytes_done = 0;
   g_st.title_known = 0;
   g_st.removed = 0;
+  g_st.status[0] = g_st.shared_with[0] = '\0';
+  g_st.replaces = g_st.shared = 0;
   g_st.has_record = false;
   g_st.error = TRE_NONE;
   g_st.detail[0] = '\0';
@@ -612,7 +829,8 @@ static void job_prepare(void) {
   if (http("GET", path, NULL, NULL, sink_buf, &b) && b.p) {
     char tmp[200];
     LightLock_Lock(&g_lock);
-    if (tr_json_get(b.p, "equipe", tmp, sizeof tmp)) snprintf(g_st.team, sizeof g_st.team, "%s", tmp);
+    if (tr_json_get(b.p, g_kind == 1 ? "autor" : "equipe", tmp, sizeof tmp)) snprintf(g_st.team, sizeof g_st.team, "%s", tmp);
+    if (tr_json_get(b.p, "status", tmp, sizeof tmp)) snprintf(g_st.status, sizeof g_st.status, "%s", tmp);
     if (tr_json_get(b.p, "regiao", tmp, sizeof tmp)) snprintf(g_st.region, sizeof g_st.region, "%s", tmp);
     if (tr_json_get(b.p, "fonte", tmp, sizeof tmp)) snprintf(g_st.source, sizeof g_st.source, "%s", tmp);
     touch();
@@ -621,7 +839,7 @@ static void job_prepare(void) {
   free(b.p);
   if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
   if (g_prep_uninstall) {
-    bool rec = load_record_files(pk.ref.id);
+    bool rec = load_record_files(&pk);
     if (!rec && !collect_files(pk.path, &c)) { if (c.err != TRE_NONE) fail(c.err, c.bad); else net_fail("listing the files"); return; }
     LightLock_Lock(&g_lock);
     g_st.has_record = rec;
@@ -635,6 +853,7 @@ static void job_prepare(void) {
   if (g_nf == 0) { fail(TRE_NOFILES, pk.path); return; }
   for (i = 0; i < g_nf; i++) total += g_files[i].size;
   if (R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&r)) && (uint64_t)r.freeClusters * r.clusterSize < total + SPACE_MARGIN) { fail(TRE_SPACE, ""); return; }
+  if (pk.kind == 1) scan_conflicts(&pk);
   LightLock_Lock(&g_lock);
   g_st.files_total = g_nf;
   g_st.bytes_total = total;
@@ -683,15 +902,17 @@ static void mkdir_p(const char *base, const char *rel_dir) {
   }
 }
 
-static bool write_record(const tr_pack *pk, const char *base) {
+/* complete = false while the install runs: if the power goes, the list shows an unfinished install, not a good one. */
+static bool write_record(const tr_pack *pk, const char *base, bool complete) {
   static char path[320];
   FILE *f;
   unsigned i;
   static char esc[512];
-  snprintf(path, sizeof path, "%s/.nsd-pack.json", base);
+  (void)base;
+  record_path_of(pk->ref.id, pk->kind, pk->ref.team, path, sizeof path);
   f = fopen(path, "wb");
   if (!f) return false;
-  fprintf(f, "{\"formato\": 1,\n \"id\": \"%s\",\n", pk->ref.id);
+  fprintf(f, "{\"formato\": 1,\n \"tipo\": \"%s\",\n \"completo\": \"%s\",\n \"id\": \"%s\",\n", pk->kind == 1 ? "mod" : "traducao", complete ? "sim" : "nao", pk->ref.id);
   tr_json_escape(pk->ref.game, esc, sizeof esc);
   fprintf(f, " \"jogo\": \"%s\",\n", esc);
   tr_json_escape(pk->ref.team, esc, sizeof esc);
@@ -707,18 +928,16 @@ static bool write_record(const tr_pack *pk, const char *base) {
   return fclose(f) == 0;
 }
 
-static int cmp_ptr(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
-
 /* An update: the files the previous version wrote that this one no longer has are removed (from the old record, which is
  * still there until write_record replaces it). */
-static void remove_stale(const char *base) {
+static void remove_stale(const tr_pack *pk, const char *base) {
   static char path[330], rel[220];
   char *txt, **sorted;
   const char *p;
   FILE *f;
   long size;
   unsigned i, removed = 0;
-  snprintf(path, sizeof path, "%s/.nsd-pack.json", base);
+  record_path_of(pk->ref.id, pk->kind, pk->ref.team, path, sizeof path);
   f = fopen(path, "rb");
   if (!f) return;
   fseek(f, 0, SEEK_END);
@@ -762,6 +981,90 @@ static size_t sink_slot(char *ptr, size_t a, size_t b, void *ud) {
   return n;
 }
 
+/* A mod replaces files that may already be there (the owner's own patch, a translation's file): the original goes to
+ * .nsd-backup/<mod>/<same path> first, and comes back on uninstall or if the install fails. Returns 1 backed up, 0 nothing
+ * there, -1 could not. */
+static int backup_existing(const char *base, const char *team, const char *rel, const char *dst) {
+  static char bak[400], sub[260];
+  char sl[48];
+  const char *slash;
+  struct stat sb;
+  if (stat(dst, &sb) != 0) return 0;
+  slug_of(team, sl, sizeof sl);
+  slash = strrchr(rel, '/');
+  if (slash) snprintf(sub, sizeof sub, ".nsd-backup/%s/%.*s", sl, (int)(slash - rel), rel);
+  else snprintf(sub, sizeof sub, ".nsd-backup/%s", sl);
+  mkdir_p(base, sub);
+  snprintf(bak, sizeof bak, "%s/.nsd-backup/%s/%s", base, sl, rel);
+  remove(bak);
+  return rename(dst, bak) == 0 ? 1 : -1;
+}
+
+/* An install that failed or was cancelled: what was put in place goes away and every original comes back. */
+static void rollback(const tr_pack *pk, const char *base) {
+  static char dst[330], bak[400], rec[160];
+  char sl[48];
+  unsigned i;
+  slug_of(pk->ref.team, sl, sizeof sl);
+  for (i = 0; i < g_nf; i++) {
+    const char *rel = file_at(i);
+    snprintf(dst, sizeof dst, "%s/%s", base, rel);
+    if (g_fflag[i] & 2) remove(dst);
+    if (g_fflag[i] & 1) {
+      snprintf(bak, sizeof bak, "%s/.nsd-backup/%s/%s", base, sl, rel);
+      remove(dst);
+      rename(bak, dst);
+    }
+  }
+  record_path_of(pk->ref.id, pk->kind, pk->ref.team, rec, sizeof rec);
+  remove(rec);
+  alog("Mods: install rolled back (%s)", pk->ref.team);
+}
+
+/* Removes what a mod's record lists and puts back the originals it had backed up. Returns the files removed or restored. */
+static unsigned uninstall_by_record(const tr_pack *pk, const char *base) {
+  static char path[330], bak[400], rec[160], dirp[330];
+  char sl[48], **list;
+  unsigned n = 0, i, done = 0;
+  record_path_of(pk->ref.id, pk->kind, pk->ref.team, rec, sizeof rec);
+  list = read_list(rec, &n);
+  slug_of(pk->ref.team, sl, sizeof sl);
+  for (i = 0; i < n && !cancelled(); i++) {
+    struct stat sb;
+    if (!tr_path_ok(list[i])) continue;
+    snprintf(path, sizeof path, "%s/%s", base, list[i]);
+    snprintf(bak, sizeof bak, "%s/.nsd-backup/%s/%s", base, sl, list[i]);
+    if (stat(bak, &sb) == 0) { remove(path); if (rename(bak, path) == 0) done++; }
+    else if (remove(path) == 0) done++;
+    LightLock_Lock(&g_lock);
+    g_st.files_done = i + 1;
+    g_st.removed = done;
+    touch();
+    LightLock_Unlock(&g_lock);
+  }
+  /* folders left empty (rmdir only works on an empty one), the backup folders too */
+  for (i = 0; i < n; i++) {
+    char rel[220];
+    snprintf(rel, sizeof rel, "%s", list[i]);
+    for (;;) {
+      char *slash = strrchr(rel, '/');
+      if (!slash) break;
+      *slash = '\0';
+      snprintf(dirp, sizeof dirp, "%s/%s", base, rel);
+      rmdir(dirp);
+      snprintf(dirp, sizeof dirp, "%s/.nsd-backup/%s/%s", base, sl, rel);
+      rmdir(dirp);
+    }
+  }
+  snprintf(dirp, sizeof dirp, "%s/.nsd-backup/%s", base, sl);
+  rmdir(dirp);
+  snprintf(dirp, sizeof dirp, "%s/.nsd-backup", base);
+  rmdir(dirp);
+  remove(rec);
+  if (list) free_list(list, n);
+  return done;
+}
+
 static void job_install(void) {
   tr_pack pk;
   static char base[96], src[480], dirrel[220];
@@ -784,6 +1087,10 @@ static void job_install(void) {
   alog("Translations: installing %s v %s (%u files)", pk.ref.id, pk.ref.version, g_nf);
   mkdir_p(base, "");
   g_bytes_base = 0;
+  memset(g_fflag, 0, g_nf);
+  if (pk.kind == 1) uninstall_by_record(&pk, base); /* an update first puts back what the old version had replaced */
+  else remove_stale(&pk, base);                     /* files the old version had and this one has not */
+  if (!write_record(&pk, base, false)) { fail(TRE_IO, "record"); goto out; }
   {
     /* PAR files at once: the share takes a second or more to answer each request, so one at a time was mostly waiting */
     static slot sl[PAR];
@@ -814,6 +1121,11 @@ static void job_install(void) {
         snprintf(s2->dst, sizeof s2->dst, "%s/%s", base, rel);
         snprintf(s2->tmp, sizeof s2->tmp, "%s.nsdtmp", s2->dst);
         snprintf(src, sizeof src, "%s/arquivos/%s", pk.path, rel);
+        if (pk.kind == 1) {
+          int bk = backup_existing(base, pk.ref.team, rel, s2->dst);
+          if (bk < 0) { fail(TRE_IO, rel); bad = true; break; }
+          if (bk) g_fflag[next] |= 1;
+        }
         s2->f = fopen(s2->tmp, "wb");
         if (s2->f && s2->wbuf) setvbuf(s2->f, s2->wbuf, _IOFBF, WBUF);
         g_ms_open += now_ms() - t_b;
@@ -874,6 +1186,7 @@ static void job_install(void) {
         remove(d->dst);
         if (rename(d->tmp, d->dst) != 0) { remove(d->tmp); fail(TRE_IO, file_at(d->idx)); bad = true; break; }
         g_ms_ren += now_ms() - t_b;
+        g_fflag[d->idx] |= 2;
         g_bytes_base += d->got;
         done++;
       }
@@ -890,22 +1203,21 @@ static void job_install(void) {
       if (sl[k].c) curl_easy_cleanup(sl[k].c);
       free(sl[k].wbuf);
     }
-    if (bad) goto out;
+    if (bad) { if (pk.kind == 1) rollback(&pk, base); goto out; }
     LightLock_Lock(&g_lock);
     g_st.files_done = done;
     g_st.bytes_done = g_bytes_base;
     touch();
     LightLock_Unlock(&g_lock);
   }
-  if (cancelled()) { fail(TRE_CANCELLED, ""); goto out; }
+  if (cancelled()) { if (pk.kind == 1) rollback(&pk, base); fail(TRE_CANCELLED, ""); goto out; }
   alog("Translations: %u files, %llu KiB in %lu s, %ld new connections", g_nf, (unsigned long long)(g_bytes_base >> 10),
        (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects);
   alog("Waits summed: TLS %.0f s, first byte %.0f s; slots %d, average in flight %.1f", g_sum_tls, g_sum_first, g_par,
        (now_ms() - g_inst_start) ? (double)g_conc_ms_x / (double)(now_ms() - g_inst_start) : 0.0);
   alog("Loop: network %lu s, card %lu s (create %lu, close %lu, rename %lu)", (unsigned long)(g_ms_net / 1000), (unsigned long)(g_ms_sd / 1000),
        (unsigned long)(g_ms_open / 1000), (unsigned long)(g_ms_close / 1000), (unsigned long)(g_ms_ren / 1000));
-  remove_stale(base);
-  if (!write_record(&pk, base)) { fail(TRE_IO, ".nsd-pack.json"); goto out; }
+  if (!write_record(&pk, base, true)) { fail(TRE_IO, "record"); goto out; }
   alog("Translations: %s installed", pk.ref.id);
   set_state(TRS_DONE);
 out:
@@ -925,6 +1237,13 @@ static void job_uninstall(void) {
   pk = g_packs[g_prep_pack];
   snprintf(base, sizeof base, LUMA_TITLES "/%s", pk.ref.id);
   set_state(TRS_WORKING);
+  if (pk.kind == 1) { /* a mod: its own files go and the originals it replaced come back */
+    removed = uninstall_by_record(&pk, base);
+    alog("Mods: %s uninstalled (%u files removed or restored)", pk.ref.team, removed);
+    if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
+    set_state(TRS_DONE);
+    return;
+  }
   dirs = calloc(g_nf ? g_nf : 1, sizeof *dirs);
   for (i = 0; i < g_nf && !cancelled(); i++) {
     const char *rel = file_at(i);
@@ -961,7 +1280,7 @@ static void job_uninstall(void) {
     }
     free(dirs);
   }
-  snprintf(path, sizeof path, "%s/.nsd-pack.json", base);
+  record_path_of(pk.ref.id, pk.kind, pk.ref.team, path, sizeof path);
   remove(path);
   rmdir(base); /* only if nothing else is in it */
   alog("Translations: %s uninstalled (%u files removed)", pk.ref.id, removed);
@@ -1010,25 +1329,53 @@ static bool start(int job) {
 }
 
 void tr_init(void) {
+  int k;
   if (g_init) return;
   LightLock_Init(&g_lock);
-  g_packs = calloc(MAX_PACKS, sizeof *g_packs);
+  K[0].root_name = "traducoes";
+  K[0].cfg_path = "sdmc:/3ds/nintendo-dev-agent/config/translations-url";
+  K[0].cache_path = CACHE_DIR "/translations.txt";
+  K[0].default_url = NSD_DEFAULT_TRANSLATIONS_URL;
+  K[1].root_name = "mods";
+  K[1].cfg_path = "sdmc:/3ds/nintendo-dev-agent/config/mods-url";
+  K[1].cache_path = CACHE_DIR "/mods.txt";
+  K[1].default_url = NSD_DEFAULT_MODS_URL;
   g_files = calloc(MAX_FILES, sizeof *g_files);
-  g_init = g_packs && g_files;
-  load_config();
+  g_fflag = calloc(MAX_FILES, 1);
+  g_init = g_files != NULL && g_fflag != NULL;
+  for (k = 0; k < 2; k++) {
+    g_kind = k;
+    K[k].packs = calloc(MAX_PACKS, sizeof *K[k].packs);
+    if (!K[k].packs) g_init = false;
+    load_config();
+  }
+  g_kind = 0;
 }
+
+/* Which catalog the calls below act on (translations or mods). Not while a job is running. */
+void tr_select(int kind) {
+  if (kind < 0 || kind > 1 || tr_busy() || kind == g_kind) return;
+  g_kind = kind;
+  LightLock_Lock(&g_lock);
+  g_st.state = K[kind].np > 0 ? TRS_READY : TRS_IDLE;
+  g_st.error = TRE_NONE;
+  touch();
+  LightLock_Unlock(&g_lock);
+}
+int tr_kind(void) { return g_kind; }
 
 void tr_shutdown(void) {
   if (!g_init) return;
   __atomic_store_n(&g_cancel, true, __ATOMIC_RELEASE);
   if (g_worker) { threadJoin(g_worker, UINT64_MAX); threadFree(g_worker); g_worker = NULL; }
-  free(g_packs);
+  for (g_kind = 0; g_kind < 2; g_kind++) { free(g_packs); g_packs = NULL; g_np = 0; }
+  g_kind = 0;
   free(g_files);
+  free(g_fflag);
   free(g_pool);
-  g_packs = NULL;
+  g_fflag = NULL;
   g_files = NULL;
   g_pool = NULL;
-  g_np = 0;
   g_init = false;
 }
 

@@ -41,7 +41,7 @@ void uit_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bo
 void uit_draw(const ui_model *m);   /* draws both screens */
 
 /* ---- translations screens (ui_trans.c) ---- */
-void uitr_open(void);
+void uitr_open(int kind);   /* 0 translations, 1 mods */
 bool uitr_flow_active(void);
 ui_action uitr_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bool *leave);
 void uitr_draw(const ui_model *m);   /* draws both screens */
