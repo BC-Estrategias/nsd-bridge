@@ -2,8 +2,9 @@
 
 The **Translations** screen installs game translations that are published as [Luma3DS](https://github.com/LumaTeam/Luma3DS)
 *LayeredFS* patches (the files Luma reads from `/luma/titles/<TITLE ID>/` instead of the game's own) from a folder you host
-yourself. NSD Bridge ships with **no** catalog and **no** translation files: you point it at your own WebDAV share
-(a Nextcloud public link) and it reads what is there.
+yourself. NSD Bridge ships with **no** translation files: it reads a WebDAV share (a Nextcloud public link). Builds from
+2.0.0 on carry a default **read-only** link to BC Labs' share; **SELECT** in the screen types another one (`-` goes back to the
+default), and a build made without the default has no catalog until you type one.
 
 > Luma3DS must have **Enable game patching** turned on (hold SELECT while powering on to open its settings). NSD Bridge only
 > reminds you; it never changes Luma's settings.
@@ -11,7 +12,8 @@ yourself. NSD Bridge ships with **no** catalog and **no** translation files: you
 ## Where the catalog is
 
 In the console's `/3ds/nintendo-dev-agent/config/translations-url` there is one line: the public share link, for example
-`https://cloud.example.com/s/AbCdEf123`. The *Translations* screen asks for it with the keyboard the first time. The share
+`https://cloud.example.com/s/AbCdEf123` (when the file does not exist the build's default link is used). The mods catalog has its
+own, `config/mods-url`. The share
 must contain a `traducoes/` folder laid out as below. (Only Nextcloud / ownCloud public links are understood for now: the
 link's last part is the WebDAV user name, the password is empty.)
 
@@ -47,21 +49,35 @@ traducoes/
 }
 ```
 
-Only the credits are read (`equipe`, `regiao`, `fonte`, shown on the confirmation screen). Without the file the folder names
-are used.
+Read fields: `equipe` (or `autor`, for a mod), `regiao` and `fonte` (shown on the confirmation screen), `descricao` (a short
+description, under the game's name in the list) and `status` (a warning shown in yellow, for example *experimental*). Without the
+file the folder names are used.
 
 ## What the console does
 
 1. **Catalog:** reads the folders (WebDAV `PROPFIND`, one level at a time) and keeps a saved copy in
-   `/3ds/nintendo-dev-agent/cache/translations.txt`; *Refresh* reads again.
+   `/3ds/nintendo-dev-agent/cache/translations.txt` together with the folder's tag (its ETag). The saved list shows at once when
+   the screen opens; one small request asks whether the tag changed and, if so, the list is read again. If the server does not
+   answer, a red line says so and the saved list stays. **Y** reads again regardless.
 2. **Marks:** `★` a pack NSD Bridge installed (the version is shown, with *update* if the share has a newer one);
    `☆` a folder already exists in `/luma/titles/<ID>/` but was put there by hand.
 3. **Install:** lists `arquivos/`, shows what will be written (files, size, the game name, the credits, and a warning if the
-   title is not installed on this console), and waits for A. Each file is downloaded to a temporary name and renamed, so a
-   file is either complete or untouched. When everything is there it writes `/luma/titles/<ID>/.nsd-pack.json` with the
-   pack's details and the list of files, which is what makes *Uninstall* and the update check possible.
+   title is not installed on this console), and waits for A. The record `/luma/titles/<ID>/.nsd-pack.json` (details and the
+   list of files, marked "incomplete") is written first and the files are downloaded straight to their names, six at once,
+   each one tried again up to three times after a server error or a dropped connection; when everything is there the record
+   is marked complete. An install that was interrupted shows `!` in the list and is finished by installing again. The record
+   is what makes *Uninstall* and the update check possible.
 4. **Uninstall:** with the record, removes exactly the files the pack wrote (and folders left empty). For a `☆` pack (no
    record) it removes only the files that also appear in the share's list for that pack; never the whole folder.
+
+## Mods
+
+A second catalog with the same screens and rules, laid out as `mods/<TITLE ID> - <game name>/<mod>/v<version>/{arquivos,extras,pacote.json}`
+(`pacote.json` may carry `autor` instead of `equipe`). A mod may replace files that exist already, so the install copies each
+original to `/luma/titles/<ID>/.nsd-backup/<mod>/<path>` first (the confirmation says how many files will be replaced and how many
+of them belong to another installed pack), rolls back if anything fails, and *Uninstall* puts the originals back. Its record is
+`/luma/titles/<ID>/.nsd-mod-<mod>.json`. A mod's files are written to a temporary name and renamed, so a replaced file is either
+complete or untouched.
 
 ## Safety rules
 

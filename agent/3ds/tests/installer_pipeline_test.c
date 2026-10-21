@@ -60,6 +60,8 @@ static Result FSFILE_Write(Handle h, u32 *wrote, uint64_t off, const void *buf, 
   return 0;
 }
 static Result AM_StartCiaInstall(FS_MediaType m, Handle *h) { (void)m; *h = 1; return 0; }
+static bool aptIsHomeAllowed(void) { return true; }
+static void aptSetHomeAllowed(bool a) { (void)a; }
 static Result AM_CancelCIAInstall(Handle h) { (void)h; g_cancelled_am++; return 0; }
 static Result AM_FinishCiaInstall(Handle h) { (void)h; return 0; }
 static Result AM_DeleteTitle(FS_MediaType m, uint64_t id) { (void)m; (void)id; g_deleted++; return 0; }
