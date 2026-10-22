@@ -258,6 +258,7 @@ static const char *err_text(const tr_status *s) {
     case TRE_SPACE: return UI_T("Not enough space on the SD card.", "Sem espaço suficiente no cartão SD.");
     case TRE_IO: snprintf(buf, sizeof buf, "%s %.60s", UI_T("Could not write:", "Não consegui gravar:"), s->detail); return buf;
     case TRE_CANCELLED: return UI_T("Cancelled.", "Cancelado.");
+    case TRE_ZIP: return UI_T("The pacote.zip is damaged or uses an unsupported format.", "O pacote.zip está danificado ou usa um formato sem suporte.");
     case TRE_SIZE: snprintf(buf, sizeof buf, "%s %.60s", UI_T("Wrong size:", "Tamanho errado:"), s->detail); return buf;
     default: return "";
   }
@@ -271,8 +272,21 @@ void uitr_draw(const ui_model *m) {
   top_header(m);
   /* ---- flow ---- */
   if (s.state == TRS_PREPARING || s.state == TRS_LISTING) {
-    ui_text(200, 110, 0.6f, COL_YELLOW, UI_CENTER, "%s", s.state == TRS_LISTING ? UI_T("Reading the catalog...", "Lendo o catálogo...") : UI_T("Checking the pack...", "Verificando o pacote..."));
-    if (s.state == TRS_LISTING) ui_text(200, 140, 0.45f, COL_WHITE, UI_CENTER, "%d %s", s.list_requests, UI_T("requests", "pedidos"));
+    if (s.state == TRS_PREPARING && s.zip_total) { /* downloading pacote.zip */
+      float frac = (float)((double)s.zip_done / (double)s.zip_total);
+      char d[24];
+      if (frac > 1.0f) frac = 1.0f;
+      ui_text(200, 100, 0.6f, COL_YELLOW, UI_CENTER, "%s", UI_T("Downloading the pack...", "Baixando o pacote..."));
+      ui_rect(30, 130, 340, 14, COL_BAR);
+      ui_rect(30, 130, 340.0f * frac, 14, COL_GREEN);
+      fmt_size(d, sizeof d, s.zip_done);
+      fmt_size(sz, sizeof sz, s.zip_total);
+      ui_text(200, 150, 0.42f, COL_WHITE, UI_CENTER, "%u%%   %s / %s   %.2f MiB/s", (unsigned)(frac * 100.0f), d, sz, (double)s.bps / 1048576.0);
+      if (s.eta_s > 0) ui_text(200, 168, 0.42f, COL_CYAN, UI_CENTER, "%s ~%u:%02u", UI_T("Time left", "Tempo restante"), s.eta_s / 60, s.eta_s % 60);
+    } else {
+      ui_text(200, 110, 0.6f, COL_YELLOW, UI_CENTER, "%s", s.state == TRS_LISTING ? UI_T("Reading the catalog...", "Lendo o catálogo...") : UI_T("Checking the pack...", "Verificando o pacote..."));
+      if (s.state == TRS_LISTING) ui_text(200, 140, 0.45f, COL_WHITE, UI_CENTER, "%d %s", s.list_requests, UI_T("requests", "pedidos"));
+    }
     ui_scene_bottom(COL_BOT_BG);
     ui_bottom_chrome(kind_title(), UI_T("Please wait", "Aguarde"), UI_T("B: Cancel", "B: Cancelar"));
     return;
@@ -306,11 +320,14 @@ void uitr_draw(const ui_model *m) {
         if (!un) { ui_text(12, y, 0.38f, COL_CYAN, 0, "%s", UI_T("Luma: turn on \"Enable game patching\" (SELECT at boot).", "Luma: ligue \"Enable game patching\" (SELECT ao ligar).")); y += 15; }
         if (un && !s.has_record) ui_text(12, y, 0.38f, COL_YELLOW, 0, "%s", UI_T("Made by hand: only files that are in the pack are removed.", "Feita à mão: só os arquivos que estão no pacote são removidos."));
       } else if (s.state == TRS_WORKING) {
-        float frac = (!un && s.bytes_total) ? (float)((double)s.bytes_done / (double)s.bytes_total) : (s.files_total ? (float)s.files_done / (float)s.files_total : 0.0f);
+        /* a pack of hundreds of tiny files is measured by files: by bytes the first few big ones looked like a third of the work */
+        bool by_files = un || s.zip_mode || s.files_total >= 300 || !s.bytes_total;
+        float frac = !by_files ? (float)((double)s.bytes_done / (double)s.bytes_total) : (s.files_total ? (float)s.files_done / (float)s.files_total : 0.0f);
         if (frac > 1.0f) frac = 1.0f;
         ui_rect(30, 150, 340, 14, COL_BAR);
         ui_rect(30, 150, 340.0f * frac, 14, COL_GREEN);
         if (un) snprintf(line, sizeof line, "%u / %u %s", s.files_done, s.files_total, UI_T("files", "arquivos"));
+        else if (s.zip_mode) snprintf(line, sizeof line, "%u%%   %u / %u %s   %u.%u/s", (unsigned)(frac * 100.0f), s.files_done, s.files_total, UI_T("files", "arquivos"), s.fps10 / 10, s.fps10 % 10);
         else {
           char d[24];
           fmt_size(d, sizeof d, s.bytes_done);

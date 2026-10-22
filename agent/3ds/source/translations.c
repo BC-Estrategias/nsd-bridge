@@ -15,8 +15,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <zlib.h>
+
 #include "alog.h"
 #include "nettune.h"
+#include "tzip.h"
 #include "ndp/ndp_defs.h"
 
 #define CACHE_DIR "sdmc:/3ds/nintendo-dev-agent/cache"
@@ -223,6 +226,25 @@ static void apply_opts(CURL *c, const char *method, const char *path) {
  * multi handle of the job (g_mh), so the HTTPS connection stays open between them: a new handshake per file is what made the
  * first version take seconds for each tiny file. */
 static CURLM *g_mh;
+/* A request may carry two extra header lines (Range, If-Range) and may ask for the status line and the ETag of the answer. All are
+ * cleared when the request ends. */
+static char g_x1[64], g_x2[112], g_resp_etag[96];
+static bool g_capture;
+static long g_resp_status;
+static size_t on_header(char *p, size_t a, size_t b, void *ud) {
+  size_t n = a * b;
+  (void)ud;
+  if (n > 12 && !strncmp(p, "HTTP/", 5)) g_resp_status = strtol(p + 9, NULL, 10);
+  else if (n > 6 && !strncasecmp(p, "ETag:", 5)) {
+    const char *v = p + 5;
+    size_t l;
+    while (*v == ' ') v++;
+    l = n - (size_t)(v - p);
+    while (l && (v[l - 1] == '\r' || v[l - 1] == '\n' || v[l - 1] == ' ')) l--;
+    if (l && l < sizeof g_resp_etag) { memcpy(g_resp_etag, v, l); g_resp_etag[l] = '\0'; }
+  }
+  return n;
+}
 static bool http(const char *method, const char *path, const char *depth, const char *body, curl_write_callback sink, void *ud) {
   static char dh[24];
   struct curl_slist *hdr = NULL;
@@ -238,6 +260,13 @@ static bool http(const char *method, const char *path, const char *depth, const 
     hdr = curl_slist_append(hdr, "Content-Type: application/xml");
     curl_easy_setopt(g_c, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(g_c, CURLOPT_POSTFIELDSIZE, (long)strlen(body));
+  }
+  if (g_x1[0]) hdr = curl_slist_append(hdr, g_x1);
+  if (g_x2[0]) hdr = curl_slist_append(hdr, g_x2);
+  if (g_capture) {
+    g_resp_status = 0;
+    g_resp_etag[0] = '\0';
+    curl_easy_setopt(g_c, CURLOPT_HEADERFUNCTION, on_header);
   }
   if (hdr) curl_easy_setopt(g_c, CURLOPT_HTTPHEADER, hdr);
   curl_multi_add_handle(g_mh, g_c);
@@ -258,6 +287,8 @@ static bool http(const char *method, const char *path, const char *depth, const 
   curl_slist_free_all(hdr);
   g_net_code = (int)code;
   g_http_code = http_code;
+  g_x1[0] = g_x2[0] = '\0';
+  g_capture = false;
   return code == CURLE_OK && http_code > 0 && http_code < 400;
 }
 
@@ -822,6 +853,190 @@ static void scan_conflicts(const tr_pack *pk) {
   LightLock_Unlock(&g_lock);
 }
 
+/* ---- a pack published as one file: <version>/pacote.zip (stored or deflate, paths relative to /luma/titles/<ID>/) ----
+ * It is downloaded first (with resume: the part on the card is continued when the share says the file is the same), then its
+ * central directory gives the file list for the confirmation, and the install extracts it. A pack without a zip still uses arquivos/. */
+#define ZIP_DIR "sdmc:/3ds/nintendo-dev-agent/downloads"
+typedef struct { uint32_t lho, csize, usize, crc; uint16_t method; } zent;
+static zent *g_zent;
+static bool g_zip_mode;
+static char g_zip_path[200], g_zip_tag[208];
+static uint64_t g_zl_ms, g_zl_bytes;
+static double g_zema;
+
+static void zip_names(const char *packpath) {
+  uint64_t h = 1469598103934665603ull;
+  const char *p;
+  for (p = packpath; *p; p++) { h ^= (uint8_t)*p; h *= 1099511628211ull; }
+  snprintf(g_zip_path, sizeof g_zip_path, ZIP_DIR "/pk-%08lx%08lx.zip", (unsigned long)(h >> 32), (unsigned long)(h & 0xFFFFFFFFu));
+  snprintf(g_zip_tag, sizeof g_zip_tag, ZIP_DIR "/pk-%08lx%08lx.ztag", (unsigned long)(h >> 32), (unsigned long)(h & 0xFFFFFFFFu));
+}
+
+static void zip_progress(uint64_t done) {
+  uint64_t t = now_ms();
+  LightLock_Lock(&g_lock);
+  g_st.zip_done = done;
+  if (t - g_zl_ms >= 1000) {
+    double inst = (double)(done - g_zl_bytes) * 1000.0 / (double)(t - g_zl_ms);
+    g_zema = g_zema > 0 ? 0.8 * g_zema + 0.2 * inst : inst;
+    g_st.bps = (unsigned)inst;
+    g_st.eta_s = g_zema > 1.0 && g_st.zip_total > done ? (unsigned)((double)(g_st.zip_total - done) / g_zema) : 0;
+    g_zl_ms = t;
+    g_zl_bytes = done;
+    touch();
+  } else if (t - g_zl_ms >= 250) {
+    touch();
+  }
+  LightLock_Unlock(&g_lock);
+}
+
+typedef struct { FILE *f; uint64_t base, got; bool opened; char *wbuf; } zsink;
+static size_t sink_zip(char *ptr, size_t a, size_t b, void *ud) {
+  zsink *x = ud;
+  size_t n = a * b;
+  if (cancelled() || g_resp_status >= 300) return 0;
+  if (!x->opened) {
+    /* 206: the share continues from where the part ends; 200: it sends the whole file, so the part starts over */
+    if (x->base > 0 && g_resp_status == 206) { x->f = fopen(g_zip_path, "r+b"); if (x->f) fseek(x->f, (long)x->base, SEEK_SET); }
+    else { x->base = 0; x->f = fopen(g_zip_path, "wb"); }
+    if (!x->f) return 0;
+    setvbuf(x->f, x->wbuf, _IOFBF, IO_SIZE);
+    x->opened = true;
+    if (g_resp_etag[0]) { FILE *t = fopen(g_zip_tag, "wb"); if (t) { fputs(g_resp_etag, t); fclose(t); } }
+  }
+  if (fwrite(ptr, 1, n, x->f) != n) return 0;
+  x->got += n;
+  zip_progress(x->base + x->got);
+  return n;
+}
+static size_t sink_drop(char *ptr, size_t a, size_t b, void *ud) { (void)ptr; (void)ud; return a * b; }
+
+/* The share lists pacote.zip next to pacote.json? Returns its size. */
+static bool zip_detect(const tr_pack *pk, uint64_t *zsize) {
+  int n = list_dir(pk->path), i;
+  for (i = 0; i < n; i++)
+    if (!g_es[i].is_dir && !strcmp(g_es[i].name, "pacote.zip")) { *zsize = g_es[i].size; return true; }
+  return false;
+}
+
+/* Makes g_zip_path hold the whole pacote.zip. A failure is reported (and the part kept for a resume). */
+static bool zip_fetch(const tr_pack *pk, uint64_t zsize) {
+  static char url[420], etag[96];
+  struct stat sb;
+  uint64_t base = 0;
+  FS_ArchiveResource r;
+  zsink zs;
+  bool ok;
+  zip_names(pk->path);
+  mkdir("sdmc:/3ds", 0777);
+  mkdir("sdmc:/3ds/nintendo-dev-agent", 0777);
+  mkdir(ZIP_DIR, 0777);
+  etag[0] = '\0';
+  if (stat(g_zip_path, &sb) == 0) {
+    size_t n = 0;
+    if (!slurp(g_zip_tag, etag, sizeof etag, &n) || n == 0 || (uint64_t)sb.st_size > zsize) { remove(g_zip_path); remove(g_zip_tag); etag[0] = '\0'; }
+    else base = (uint64_t)sb.st_size;
+  }
+  snprintf(url, sizeof url, "%s/pacote.zip", pk->path);
+  if (base == zsize) { /* all of it is there: one tiny request tells whether the share still has this same file */
+    snprintf(g_x1, sizeof g_x1, "Range: bytes=0-0");
+    snprintf(g_x2, sizeof g_x2, "If-Range: %s", etag);
+    g_capture = true;
+    ok = http("GET", url, NULL, NULL, sink_drop, NULL);
+    if (ok && g_resp_status == 206) { LightLock_Lock(&g_lock); g_st.zip_done = zsize; touch(); LightLock_Unlock(&g_lock); return true; }
+    if (cancelled()) { fail(TRE_CANCELLED, ""); return false; }
+    if (!ok && g_http_code >= 400 && g_http_code != 416) { net_fail("pacote.zip"); return false; }
+    remove(g_zip_path);
+    remove(g_zip_tag);
+    base = 0;
+    etag[0] = '\0';
+  }
+  if (R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&r)) && (uint64_t)r.freeClusters * r.clusterSize < (zsize - base) + SPACE_MARGIN) { fail(TRE_SPACE, ""); return false; }
+  memset(&zs, 0, sizeof zs);
+  zs.base = base;
+  zs.wbuf = malloc(IO_SIZE);
+  if (!zs.wbuf) { fail(TRE_IO, "memory"); return false; }
+  g_zema = 0;
+  g_zl_ms = now_ms();
+  g_zl_bytes = base;
+  LightLock_Lock(&g_lock);
+  g_st.zip_total = zsize;
+  g_st.zip_done = base;
+  g_st.bps = g_st.eta_s = 0;
+  touch();
+  LightLock_Unlock(&g_lock);
+  if (base > 0) {
+    snprintf(g_x1, sizeof g_x1, "Range: bytes=%llu-", (unsigned long long)base);
+    snprintf(g_x2, sizeof g_x2, "If-Range: %s", etag);
+  }
+  g_capture = true;
+  ok = http("GET", url, NULL, NULL, sink_zip, &zs);
+  if (zs.f) fclose(zs.f);
+  free(zs.wbuf);
+  if (!ok) {
+    if (cancelled()) fail(TRE_CANCELLED, "");
+    else net_fail("pacote.zip");
+    return false; /* what arrived stays on the card: the same pack continues from there */
+  }
+  if (stat(g_zip_path, &sb) != 0 || (uint64_t)sb.st_size != zsize) { remove(g_zip_path); remove(g_zip_tag); fail(TRE_SIZE, "pacote.zip"); return false; }
+  return true;
+}
+
+/* Reads the central directory of the downloaded zip into the same list arquivos/ would have given. */
+static bool zip_open_index(uint64_t zsize, collect *c) {
+  static char nm[320];
+  FILE *f = fopen(g_zip_path, "rb");
+  uint8_t *tail = NULL, *cd = NULL;
+  uint32_t off = 0, size = 0, count = 0;
+  size_t tn = zsize < 65557u ? (size_t)zsize : 65557u, pos = 0;
+  uint64_t total = 0;
+  tzip_ent e;
+  int r;
+  bool ok = false;
+  pool_reset();
+  c->err = TRE_ZIP;
+  snprintf(c->bad, sizeof c->bad, "%s", "pacote.zip");
+  if (!f) { c->err = TRE_IO; return false; }
+  tail = malloc(tn);
+  if (!tail || fseeko(f, (off_t)(zsize - tn), SEEK_SET) != 0 || fread(tail, 1, tn, f) != tn) goto done;
+  if (tzip_eocd(tail, tn, zsize, &off, &size, &count) != 0 || size > 8u * 1024u * 1024u || count > 2u * MAX_FILES) goto done;
+  cd = malloc(size ? size : 1);
+  if (!cd || fseeko(f, (off_t)off, SEEK_SET) != 0 || (size && fread(cd, 1, size, f) != size)) goto done;
+  if (!g_zent) g_zent = calloc(MAX_FILES, sizeof *g_zent);
+  if (!g_zent) { c->err = TRE_IO; goto done; }
+  while ((r = tzip_next(cd, size, &pos, &e)) == TZIP_ENTRY) {
+    const char *rel = nm;
+    if (e.name_len == 0 || e.name_len >= sizeof nm) { c->err = TRE_BADPATH; snprintf(c->bad, sizeof c->bad, "%s", "(name)"); goto done; }
+    memcpy(nm, e.name, e.name_len);
+    nm[e.name_len] = '\0';
+    if (nm[e.name_len - 1] == '/') continue;               /* a folder entry */
+    if (!strncmp(rel, "arquivos/", 9)) rel += 9;            /* a zip made from the pack's own folder */
+    if (!strncmp(rel, "__MACOSX/", 9) || !rel[0] || skipped(rel)) continue;
+    if (!tr_path_ok(rel)) { c->err = TRE_BADPATH; snprintf(c->bad, sizeof c->bad, "%.110s", rel); goto done; }
+    total += e.usize;
+    if (total > MAX_BYTES || !pool_add(rel, e.usize)) { c->err = TRE_TOOBIG; goto done; }
+    g_zent[g_nf - 1] = (zent){e.lho, e.csize, e.usize, e.crc, e.method};
+  }
+  if (r != TZIP_END) goto done;
+  {
+    /* the same path twice would be written twice */
+    char **v = malloc((g_nf ? g_nf : 1) * sizeof *v);
+    unsigned i;
+    if (!v) { c->err = TRE_IO; goto done; }
+    for (i = 0; i < g_nf; i++) v[i] = (char *)file_at(i);
+    qsort(v, g_nf, sizeof *v, cmp_ptr);
+    for (i = 1; i < g_nf; i++) if (!strcmp(v[i - 1], v[i])) { c->err = TRE_BADPATH; snprintf(c->bad, sizeof c->bad, "%.110s", v[i]); free(v); goto done; }
+    free(v);
+  }
+  c->bytes = total;
+  ok = true;
+done:
+  if (f) fclose(f);
+  free(tail);
+  free(cd);
+  return ok;
+}
+
 static void job_prepare(void) {
   tr_pack pk;
   collect c;
@@ -840,6 +1055,10 @@ static void job_prepare(void) {
   g_st.removed = 0;
   g_st.status[0] = g_st.shared_with[0] = '\0';
   g_st.replaces = g_st.shared = 0;
+  g_st.zip_mode = false;
+  g_st.zip_done = g_st.zip_total = 0;
+  g_st.fps10 = 0;
+  g_zip_mode = false;
   g_st.has_record = false;
   g_st.error = TRE_NONE;
   g_st.detail[0] = '\0';
@@ -870,7 +1089,27 @@ static void job_prepare(void) {
     set_state(TRS_CONFIRM);
     return;
   }
-  if (!collect_files(pk.path, &c)) { if (c.err != TRE_NONE) fail(c.err, c.bad); else net_fail("listing the files"); return; }
+  {
+    uint64_t zsize = 0;
+    if (zip_detect(&pk, &zsize)) { /* one pacote.zip: download it, then read its index */
+      memset(&c, 0, sizeof c);
+      if (zsize == 0 || zsize > MAX_BYTES) { fail(TRE_TOOBIG, "pacote.zip"); return; }
+      LightLock_Lock(&g_lock);
+      g_st.zip_mode = true;
+      g_st.zip_total = zsize;
+      touch();
+      LightLock_Unlock(&g_lock);
+      if (!zip_fetch(&pk, zsize)) return;
+      LightLock_Lock(&g_lock);
+      g_st.zip_total = 0; /* the download is over: the screen goes back to "checking" */
+      touch();
+      LightLock_Unlock(&g_lock);
+      if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
+      if (!zip_open_index(zsize, &c)) { fail(c.err, c.bad); return; }
+      g_zip_mode = true;
+      alog("Translations: pacote.zip %llu KiB, %u files", (unsigned long long)(zsize >> 10), g_nf);
+    } else if (!collect_files(pk.path, &c)) { if (c.err != TRE_NONE) fail(c.err, c.bad); else net_fail("listing the files"); return; }
+  }
   if (g_nf == 0) { fail(TRE_NOFILES, pk.path); return; }
   for (i = 0; i < g_nf; i++) total += g_files[i].size;
   if (R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&r)) && (uint64_t)r.freeClusters * r.clusterSize < total + SPACE_MARGIN) { fail(TRE_SPACE, ""); return; }
@@ -1086,6 +1325,144 @@ static unsigned uninstall_by_record(const tr_pack *pk, const char *base) {
   return done;
 }
 
+/* Installs from the downloaded pacote.zip: each file is read from the zip, inflated and written in one pass, the CRC-32 and the size
+ * of every file are checked. The same record, backup and rollback rules as the file-by-file install. */
+#define ZBUF (32u * 1024u)
+static void install_zip(const tr_pack *pk, const char *base) {
+  static char dst[330], tmp[340], dirrel[220], last_dir[220], src_dummy[1];
+  uint8_t *in = malloc(ZBUF), *out = malloc(ZBUF);
+  char *wbuf = malloc(IO_SIZE);
+  FILE *zf = fopen(g_zip_path, "rb");
+  unsigned i, done = 0;
+  uint64_t bytes = 0, t_a, t_b, t_last = now_ms(), ms_read = 0;
+  bool bad = false;
+  (void)src_dummy;
+  g_ms_open = g_ms_close = g_ms_ren = g_ms_sd = g_ms_net = 0;
+  last_dir[0] = '\x01';
+  last_dir[1] = '\0';
+  if (!in || !out || !wbuf || !zf) { fail(TRE_IO, "memory"); bad = true; }
+  for (i = 0; i < g_nf && !bad && !cancelled(); i++) {
+    const zent *e = &g_zent[i];
+    const char *rel = file_at(i), *slash;
+    FILE *f;
+    uint8_t lh[30];
+    size_t hl;
+    uint32_t crc = crc32(0L, Z_NULL, 0);
+    uint64_t produced = 0, remaining = e->csize;
+    bool good = true;
+    if (!tr_path_ok(rel)) { fail(TRE_BADPATH, rel); bad = true; break; }
+    slash = strrchr(rel, '/');
+    snprintf(dirrel, sizeof dirrel, "%.*s", slash ? (int)(slash - rel) : 0, rel);
+    if (strcmp(dirrel, last_dir)) { t_a = now_ms(); mkdir_p(base, dirrel); g_ms_sd += now_ms() - t_a; snprintf(last_dir, sizeof last_dir, "%s", dirrel); }
+    snprintf(dst, sizeof dst, "%s/%s", base, rel);
+    if (pk->kind == 1) {
+      int bk = backup_existing(base, pk->ref.team, rel, dst);
+      if (bk < 0) { fail(TRE_IO, rel); bad = true; break; }
+      if (bk) g_fflag[i] |= 1;
+      snprintf(tmp, sizeof tmp, "%s.nsdtmp", dst);
+    } else {
+      snprintf(tmp, sizeof tmp, "%s", dst); /* straight to its name: the record says "incomplete" until the end */
+    }
+    t_b = now_ms();
+    f = fopen(tmp, "wb");
+    g_ms_open += now_ms() - t_b;
+    if (!f) { fail(TRE_IO, rel); bad = true; break; }
+    setvbuf(f, wbuf, _IOFBF, IO_SIZE);
+    t_a = now_ms();
+    if (fseeko(zf, (off_t)e->lho, SEEK_SET) != 0 || fread(lh, 1, 30, zf) != 30 || tzip_local_len(lh, 30, &hl) != 0 || fseeko(zf, (off_t)(e->lho + hl), SEEK_SET) != 0) good = false;
+    if (good && e->method == 0) {
+      while (remaining && good && !cancelled()) {
+        size_t n = remaining < ZBUF ? (size_t)remaining : ZBUF;
+        if (fread(in, 1, n, zf) != n) { good = false; break; }
+        crc = crc32(crc, in, (uInt)n);
+        if (fwrite(in, 1, n, f) != n) { good = false; break; }
+        remaining -= n;
+        produced += n;
+      }
+    } else if (good) {
+      z_stream z;
+      int zr = Z_OK;
+      memset(&z, 0, sizeof z);
+      if (inflateInit2(&z, -15) != Z_OK) good = false;
+      while (good && zr != Z_STREAM_END && !cancelled()) {
+        size_t got;
+        if (z.avail_in == 0) {
+          size_t n = remaining < ZBUF ? (size_t)remaining : ZBUF;
+          if (n == 0 || fread(in, 1, n, zf) != n) { good = false; break; }
+          z.next_in = in;
+          z.avail_in = (uInt)n;
+          remaining -= n;
+        }
+        z.next_out = out;
+        z.avail_out = ZBUF;
+        zr = inflate(&z, Z_NO_FLUSH);
+        if (zr != Z_OK && zr != Z_STREAM_END) { good = false; break; }
+        got = ZBUF - z.avail_out;
+        if (got) {
+          produced += got;
+          if (produced > e->usize) { good = false; break; } /* more than the index says: refuse */
+          crc = crc32(crc, out, (uInt)got);
+          if (fwrite(out, 1, got, f) != got) { good = false; break; }
+        }
+      }
+      if (z.total_in || z.total_out || zr == Z_STREAM_END) inflateEnd(&z);
+    }
+    ms_read += now_ms() - t_a;
+    t_b = now_ms();
+    if (fclose(f) != 0) good = false;
+    g_ms_close += now_ms() - t_b;
+    if (cancelled()) { remove(tmp); break; }
+    if (!good || produced != e->usize || crc != e->crc) { remove(tmp); fail(TRE_SIZE, rel); bad = true; break; }
+    if (pk->kind == 1) {
+      t_b = now_ms();
+      remove(dst);
+      if (rename(tmp, dst) != 0) { remove(tmp); fail(TRE_IO, rel); bad = true; break; }
+      g_ms_ren += now_ms() - t_b;
+    }
+    g_fflag[i] |= 2;
+    bytes += produced;
+    done++;
+    {
+      uint64_t t = now_ms();
+      if (t - t_last >= 500) {
+        double secs = (double)(t - g_inst_start) / 1000.0;
+        double rate = secs > 0 ? (double)done / secs : 0.0;
+        LightLock_Lock(&g_lock);
+        g_st.files_done = done;
+        g_st.bytes_done = bytes;
+        g_st.fps10 = (unsigned)(rate * 10.0);
+        g_st.eta_s = rate > 0.01 ? (unsigned)((double)(g_nf - done) / rate) : 0;
+        touch();
+        LightLock_Unlock(&g_lock);
+        t_last = t;
+      }
+    }
+  }
+  if (zf) fclose(zf);
+  free(in);
+  free(out);
+  free(wbuf);
+  {
+    unsigned long secs = (unsigned long)((now_ms() - g_inst_start) / 1000);
+    alog("Translations: zip, %u of %u files, %llu KiB in %lu s (%.1f files/s)%s", done, g_nf, (unsigned long long)(bytes >> 10), secs,
+         secs ? (double)done / (double)secs : 0.0, (bad || cancelled()) ? " - stopped" : "");
+    alog("Loop: read+inflate %lu s, folders %lu s, create %lu s, close %lu s, rename %lu s", (unsigned long)(ms_read / 1000), (unsigned long)(g_ms_sd / 1000),
+         (unsigned long)(g_ms_open / 1000), (unsigned long)(g_ms_close / 1000), (unsigned long)(g_ms_ren / 1000));
+  }
+  if (bad) { if (pk->kind == 1) rollback(pk, base); return; }
+  if (cancelled()) { if (pk->kind == 1) rollback(pk, base); fail(TRE_CANCELLED, ""); return; } /* the zip stays: installing again needs no new download */
+  LightLock_Lock(&g_lock);
+  g_st.files_done = done;
+  g_st.bytes_done = bytes;
+  touch();
+  LightLock_Unlock(&g_lock);
+  if (!write_record(pk, base, true)) { fail(TRE_IO, "record"); return; }
+  remove(g_zip_path);
+  remove(g_zip_tag);
+  alog("Translations: %s installed", pk->ref.id);
+  set_state(TRS_DONE);
+}
+
 static void job_install(void) {
   tr_pack pk;
   static char base[96], src[480], dirrel[220];
@@ -1105,21 +1482,25 @@ static void job_install(void) {
   LightLock_Unlock(&g_lock);
   set_state(TRS_WORKING);
   g_inst_start = now_ms();
-  alog("Translations: installing %s v %s (%u files)", pk.ref.id, pk.ref.version, g_nf);
+  alog("Translations: installing %s v %s (%u files%s)", pk.ref.id, pk.ref.version, g_nf, g_zip_mode ? ", from pacote.zip" : "");
   mkdir_p(base, "");
   g_bytes_base = 0;
   memset(g_fflag, 0, g_nf);
   if (pk.kind == 1) uninstall_by_record(&pk, base); /* an update first puts back what the old version had replaced */
   else remove_stale(&pk, base);                     /* files the old version had and this one has not */
   if (!write_record(&pk, base, false)) { fail(TRE_IO, "record"); goto out; }
+  if (g_zip_mode) { install_zip(&pk, base); goto out; }
   {
     /* PAR files at once: the share takes a second or more to answer each request, so one at a time was mostly waiting */
     static slot sl[PAR];
+    static char raw_last[220];
     unsigned next = 0, done = 0;
     int active = 0, running = 0, k;
     bool bad = false;
     uint64_t t_a, t_b, t_last = now_ms();
     g_conc_ms_x = 0;
+    raw_last[0] = '\x01';
+    raw_last[1] = '\0';
     memset(sl, 0, sizeof sl);
     g_connects = 0;
     g_sum_tls = g_sum_first = 0;
@@ -1137,7 +1518,10 @@ static void job_install(void) {
         rel = file_at(next);
         slash = strrchr(rel, '/');
         if (!tr_path_ok(rel)) { fail(TRE_BADPATH, rel); bad = true; break; }
-        if (slash) { snprintf(dirrel, sizeof dirrel, "%.*s", (int)(slash - rel), rel); mkdir_p(base, dirrel); }
+        if (slash) {
+          snprintf(dirrel, sizeof dirrel, "%.*s", (int)(slash - rel), rel);
+          if (strcmp(dirrel, raw_last)) { mkdir_p(base, dirrel); snprintf(raw_last, sizeof raw_last, "%s", dirrel); } /* only when the folder changes */
+        }
         t_b = now_ms();
         snprintf(s2->dst, sizeof s2->dst, "%s/%s", base, rel);
         /* a translation is written straight to its name (the record already says "incomplete" until the end), which saves a rename
@@ -1249,6 +1633,16 @@ static void job_install(void) {
       if (sl[k].c) curl_easy_cleanup(sl[k].c);
       free(sl[k].wbuf);
     }
+    /* the timings go to the log whether the install finished, failed or was cancelled (a cancelled one says how far it got) */
+    {
+      unsigned long secs = (unsigned long)((now_ms() - g_inst_start) / 1000);
+      alog("Translations: %u of %u files, %llu KiB in %lu s (%.1f files/s)%s, %ld new connections", done, g_nf, (unsigned long long)(g_bytes_base >> 10), secs,
+           secs ? (double)done / (double)secs : 0.0, (bad || cancelled()) ? " - stopped" : "", g_connects);
+      alog("Waits summed: TLS %.0f s, first byte %.0f s; slots %d, average in flight %.1f", g_sum_tls, g_sum_first, g_par,
+           (now_ms() - g_inst_start) ? (double)g_conc_ms_x / (double)(now_ms() - g_inst_start) : 0.0);
+      alog("Loop: network %lu s, card %lu s (create %lu, close %lu, rename %lu)", (unsigned long)(g_ms_net / 1000), (unsigned long)(g_ms_sd / 1000),
+           (unsigned long)(g_ms_open / 1000), (unsigned long)(g_ms_close / 1000), (unsigned long)(g_ms_ren / 1000));
+    }
     if (bad) { if (pk.kind == 1) rollback(&pk, base); goto out; }
     LightLock_Lock(&g_lock);
     g_st.files_done = done;
@@ -1257,12 +1651,6 @@ static void job_install(void) {
     LightLock_Unlock(&g_lock);
   }
   if (cancelled()) { if (pk.kind == 1) rollback(&pk, base); fail(TRE_CANCELLED, ""); goto out; }
-  alog("Translations: %u files, %llu KiB in %lu s, %ld new connections", g_nf, (unsigned long long)(g_bytes_base >> 10),
-       (unsigned long)((now_ms() - g_inst_start) / 1000), g_connects);
-  alog("Waits summed: TLS %.0f s, first byte %.0f s; slots %d, average in flight %.1f", g_sum_tls, g_sum_first, g_par,
-       (now_ms() - g_inst_start) ? (double)g_conc_ms_x / (double)(now_ms() - g_inst_start) : 0.0);
-  alog("Loop: network %lu s, card %lu s (create %lu, close %lu, rename %lu)", (unsigned long)(g_ms_net / 1000), (unsigned long)(g_ms_sd / 1000),
-       (unsigned long)(g_ms_open / 1000), (unsigned long)(g_ms_close / 1000), (unsigned long)(g_ms_ren / 1000));
   if (!write_record(&pk, base, true)) { fail(TRE_IO, "record"); goto out; }
   alog("Translations: %s installed", pk.ref.id);
   set_state(TRS_DONE);
@@ -1279,6 +1667,7 @@ static void job_uninstall(void) {
   unsigned i, removed = 0;
   char **dirs;
   unsigned nd = 0;
+  uint64_t t_start = now_ms();
   if (g_prep_pack < 0 || g_prep_pack >= g_np) { fail(TRE_NOFILES, ""); return; }
   pk = g_packs[g_prep_pack];
   snprintf(base, sizeof base, LUMA_TITLES "/%s", pk.ref.id);
@@ -1329,7 +1718,7 @@ static void job_uninstall(void) {
   record_path_of(pk.ref.id, pk.kind, pk.ref.team, path, sizeof path);
   remove(path);
   rmdir(base); /* only if nothing else is in it */
-  alog("Translations: %s uninstalled (%u files removed)", pk.ref.id, removed);
+  alog("Translations: %s uninstalled (%u files removed in %lu s)", pk.ref.id, removed, (unsigned long)((now_ms() - t_start) / 1000));
   if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
   set_state(TRS_DONE);
 }
@@ -1439,6 +1828,8 @@ void tr_shutdown(void) {
   if (g_worker) { threadJoin(g_worker, UINT64_MAX); threadFree(g_worker); g_worker = NULL; }
   for (g_kind = 0; g_kind < 2; g_kind++) { free(g_packs); g_packs = NULL; g_np = 0; }
   g_kind = 0;
+  free(g_zent);
+  g_zent = NULL;
   free(g_files);
   free(g_fflag);
   free(g_pool);

@@ -20,7 +20,7 @@ typedef struct {
 } tr_pack;
 
 typedef enum { TRS_IDLE, TRS_LISTING, TRS_READY, TRS_PREPARING, TRS_CONFIRM, TRS_WORKING, TRS_DONE, TRS_ERROR } trs_state;
-typedef enum { TRE_NONE, TRE_NET, TRE_NOFILES, TRE_BADPATH, TRE_TOOBIG, TRE_SPACE, TRE_IO, TRE_CANCELLED, TRE_SIZE } tr_error;
+typedef enum { TRE_NONE, TRE_NET, TRE_NOFILES, TRE_BADPATH, TRE_TOOBIG, TRE_SPACE, TRE_IO, TRE_CANCELLED, TRE_SIZE, TRE_ZIP } tr_error;
 
 typedef struct {
   trs_state state;
@@ -37,6 +37,9 @@ typedef struct {
   unsigned files_total, files_done;
   uint64_t bytes_total, bytes_done;
   unsigned bps, eta_s;
+  bool zip_mode;          /* the pack is one pacote.zip: downloaded first (zip_done / zip_total while preparing), then extracted */
+  uint64_t zip_done, zip_total;
+  unsigned fps10;         /* extracting: files per second, times ten */
   bool has_record;        /* uninstall: the pack left its own record, so exactly its files are removed */
   unsigned removed;       /* uninstall: files removed */
   tr_error error;

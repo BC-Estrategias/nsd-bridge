@@ -48,6 +48,8 @@ if [ "${1:-}" = "--3ds" ]; then
   # the Translations logic: WebDAV answer, pack names, safe paths, pacote.json (pure C), also under ASan/UBSan
   cc -Wall -Wextra -I agent/3ds/source agent/3ds/tests/trpack_test.c agent/3ds/source/trpack.c -o build/trpack_test && ./build/trpack_test
   cc -g -fsanitize=address,undefined -fno-sanitize-recover=all -I agent/3ds/source agent/3ds/tests/trpack_test.c agent/3ds/source/trpack.c -o build/trpack_test_asan 2>/dev/null && ./build/trpack_test_asan
+  cc -Wall -Wextra -I agent/3ds/source agent/3ds/tests/tzip_test.c agent/3ds/source/tzip.c -lz -o build/tzip_test && ./build/tzip_test
+  cc -g -fsanitize=address,undefined -fno-sanitize-recover=all -I agent/3ds/source agent/3ds/tests/tzip_test.c agent/3ds/source/tzip.c -lz -o build/tzip_test_asan 2>/dev/null && ./build/tzip_test_asan
   # the CIA header parser (pure C)
   cc -Wall -I agent/3ds/source agent/3ds/tests/cia_info_test.c agent/3ds/source/cia_info.c -o build/cia_info_test && ./build/cia_info_test
   # the update-manifest logic is pure C; it needs a host Jansson (e.g. brew/apt libjansson-dev) to run
