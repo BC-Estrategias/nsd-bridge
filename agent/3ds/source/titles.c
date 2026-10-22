@@ -120,7 +120,53 @@ static void read_smdh(title_entry *t) {
   FSFILE_Close(h);
 }
 
-/* DSiWare has no SMDH: the name is in the DS ROM header. */
+/* DSiWare has no SMDH: the short name is in the DS ROM header, the full name and the 32x32 icon are in the DS banner. */
+static uint16_t ds_to_565(uint16_t c) {
+  unsigned r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;
+  return (uint16_t)((r << 11) | (((g << 1) | (g >> 4)) << 5) | b);
+}
+/* The icon is centred in the 48x48 square the list draws (white around it), in the console's tiled order (8x8 tiles, Z-order). */
+static void read_ds_banner(title_entry *t) {
+  u8 *b = calloc(1, 0x2400);
+  if (!b) return;
+  if (R_SUCCEEDED(FSUSER_GetLegacyBannerData(t->media, t->id, b))) {
+    unsigned version = b[0] | (b[1] << 8);
+    int l = g_lang, top = version >= 0x0103 ? 7 : version >= 2 ? 6 : 5;
+    const u16 *palette = (const u16 *)(b + 0x220);
+    if (l > top) l = CFG_LANGUAGE_EN;
+    for (int tries = 0; tries < 2; tries++) {
+      const u16 *title = (const u16 *)(b + 0x240 + 0x100 * l);
+      if (title[0]) {
+        char full[160], *nl;
+        nsd_utf16_to_utf8(title, 0x80, full, sizeof full);
+        nl = strchr(full, '\n');
+        if (nl) {
+          char *last = strrchr(full, '\n');
+          snprintf(t->publisher, sizeof t->publisher, "%s", last + 1);
+          *nl = '\0';
+        }
+        if (full[0]) snprintf(t->name, sizeof t->name, "%.63s", full);
+        break;
+      }
+      l = CFG_LANGUAGE_EN; /* nothing in this language: English */
+    }
+    t->icon = malloc(ICON_UNITS * 2);
+    if (t->icon) {
+      for (int i = 0; i < ICON_UNITS; i++) t->icon[i] = 0xFFFF;
+      for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++) {
+          int tile = (y >> 3) * 4 + (x >> 3);
+          u8 byte = b[0x20 + tile * 32 + (y & 7) * 4 + ((x & 7) >> 1)];
+          unsigned idx = (x & 1) ? (byte >> 4) : (byte & 15);
+          int dx = x + 8, dy = y + 8;
+          int pos = ((dy >> 3) * 6 + (dx >> 3)) * 64 + ((dx & 1) | ((dy & 1) << 1) | ((dx & 2) << 1) | ((dy & 2) << 2) | ((dx & 4) << 2) | ((dy & 4) << 3));
+          if (idx) t->icon[pos] = ds_to_565(palette[idx]);
+        }
+    }
+  }
+  free(b);
+}
+
 static void read_twl(title_entry *t) {
   u8 header[0x3B4];
   memset(header, 0, sizeof header);
@@ -133,6 +179,7 @@ static void read_twl(title_entry *t) {
     snprintf(t->name, sizeof t->name, "%s", nm);
     snprintf(t->code, sizeof t->code, "TWL-%.4s", (const char *)header + 0x0C);
   }
+  read_ds_banner(t);
 }
 
 static void cache_load(void) {
@@ -143,7 +190,7 @@ static void cache_load(void) {
   g_cache = NULL;
   g_ncache = 0;
   if (!f) return;
-  if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "NTC1", 4) && fread(&n, sizeof n, 1, f) == 1 && n > 0 && n <= MAX_TITLES) {
+  if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "NTC2", 4) && fread(&n, sizeof n, 1, f) == 1 && n > 0 && n <= MAX_TITLES) {
     g_cache = malloc((size_t)n * sizeof *g_cache);
     if (g_cache && fread(g_cache, sizeof *g_cache, (size_t)n, f) == (size_t)n) g_ncache = n;
     else { free(g_cache); g_cache = NULL; }
@@ -161,7 +208,7 @@ static void cache_save(void) {
   mkdir(CACHE_DIR, 0777);
   f = fopen(CACHE_FILE ".tmp", "wb");
   if (!f) { free(r); return; }
-  fwrite("NTC1", 1, 4, f);
+  fwrite("NTC2", 1, 4, f);
   fwrite(&g_nt, sizeof g_nt, 1, f);
   for (i = 0; i < g_nt; i++) {
     const title_entry *t = &g_t[i];
@@ -231,18 +278,20 @@ static void load_media(FS_MediaType mt) {
   free(ids);
 }
 
-/* Updates and DLC have no icon of their own: they borrow the name of the base game (same low half of the ID). */
+/* Updates and DLC have no icon of their own: they borrow the name and the icon of the base game (same low half of the ID). */
 static void name_the_rest(void) {
   int i, j;
   for (i = 0; i < g_nt; i++) {
     title_entry *t = &g_t[i];
-    if (t->name[0]) continue;
-    if (t->kind == KIND_UPDATE || t->kind == KIND_DLC) {
+    if ((t->kind == KIND_UPDATE || t->kind == KIND_DLC) && (!t->name[0] || !t->icon)) {
       for (j = 0; j < g_nt; j++) {
         const title_entry *b = &g_t[j];
         if (b->kind == KIND_APP && b->name[0] && (uint32_t)b->id == (uint32_t)t->id) {
-          snprintf(t->name, sizeof t->name, "%.50s (%s)", b->name, t->kind == KIND_UPDATE ? "update" : "DLC");
-          snprintf(t->publisher, sizeof t->publisher, "%s", b->publisher);
+          if (!t->name[0]) {
+            snprintf(t->name, sizeof t->name, "%.50s (%s)", b->name, t->kind == KIND_UPDATE ? "update" : "DLC");
+            snprintf(t->publisher, sizeof t->publisher, "%s", b->publisher);
+          }
+          if (!t->icon && b->icon) { t->icon = malloc(ICON_UNITS * 2); if (t->icon) memcpy(t->icon, b->icon, ICON_UNITS * 2); }
           break;
         }
       }

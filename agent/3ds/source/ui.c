@@ -366,9 +366,17 @@ static void draw_top(const ui_model *m) {
     }
   }
   ui_rect(0, 220, 400, 20, COL_BAR);
-  ui_text(8, 223, 0.4f, COL_WHITE, 0, "%s: %lu    %s: %lu", UI_T("Requests", "Requisições"), m->requests,
-          UI_T("Uptime", "Ativo (min)"), m->uptime_s / 60);
-  ui_text(392, 223, 0.4f, COL_WHITE, UI_RIGHT, "%.60s", alog_get(0) ? alog_get(0) : "");
+  {
+    /* the last log line is on the right and must stop where the counters end (a long one used to be drawn over them) */
+    char stats[80];
+    int room;
+    snprintf(stats, sizeof stats, "%s: %lu    %s: %lu", UI_T("Requests", "Requisições"), m->requests, UI_T("Uptime", "Ativo (min)"), m->uptime_s / 60);
+    ui_text(8, 223, 0.4f, COL_WHITE, 0, "%s", stats);
+    room = (int)((384.0f - 16.0f - (float)strlen(stats) * 5.6f) / 5.6f);
+    if (room > 60) room = 60;
+    if (room < 8) room = 8;
+    ui_text(392, 223, 0.4f, COL_WHITE, UI_RIGHT, "%.*s", room, alog_get(0) ? alog_get(0) : "");
+  }
   if (m->keys_warn) ui_text(200, 204, 0.45f, COL_RED, UI_CENTER, "%s", UI_T("Pairing not saved (SD error)", "Pareamento não salvo (erro no SD)"));
 }
 
