@@ -316,6 +316,11 @@ void uitr_draw(const ui_model *m) {
           if (s.shared) { ui_text(12, y, 0.38f, COL_RED, 0, "%u %s: %.30s", s.shared, UI_T("belong to another installed pack", "são de outro pacote instalado"), s.shared_with); y += 15; }
         }
         if (un && p->kind == 1) { ui_text(12, y, 0.38f, COL_CYAN, 0, "%s", UI_T("The originals it replaced come back from the backup.", "Os originais que ele substituiu voltam do backup.")); y += 15; }
+        if (!un && s.est_s >= 120) {
+          ui_text(12, y, 0.38f, COL_YELLOW, 0, "%u %s ~%u min", s.new_dirs, UI_T("new folders to create: about", "pastas novas a criar: cerca de"), (s.est_s + 59) / 60);
+          y += 15;
+        }
+        if (un && p->kind == 0) { ui_text(12, y, 0.38f, COL_DIM, 0, "%s", UI_T("Empty folders stay (installing again is faster).", "As pastas vazias ficam (instalar de novo fica mais rápido).")); y += 15; }
         if (!un && s.status[0]) y = draw_wrapped(12, y, 0.38f, COL_YELLOW, 66, 2, s.status);
         if (!un) { ui_text(12, y, 0.38f, COL_CYAN, 0, "%s", UI_T("Luma: turn on \"Enable game patching\" (SELECT at boot).", "Luma: ligue \"Enable game patching\" (SELECT ao ligar).")); y += 15; }
         if (un && !s.has_record) ui_text(12, y, 0.38f, COL_YELLOW, 0, "%s", UI_T("Made by hand: only files that are in the pack are removed.", "Feita à mão: só os arquivos que estão no pacote são removidos."));
@@ -337,6 +342,7 @@ void uitr_draw(const ui_model *m) {
         ui_text(200, 168, 0.42f, COL_WHITE, UI_CENTER, "%s", line);
         if (!un) {
           ui_text(200, 184, 0.4f, COL_DIM, UI_CENTER, "%u / %u %s", s.files_done, s.files_total, UI_T("files", "arquivos"));
+          if (s.zip_mode && s.dirs_total > 20) ui_text(200, 216, 0.36f, COL_DIM, UI_CENTER, "%s %u / %u", UI_T("folders", "pastas"), s.dirs_done, s.dirs_total);
           if (s.eta_s > 0) ui_text(200, 200, 0.42f, COL_CYAN, UI_CENTER, "%s ~%u:%02u", UI_T("Time left", "Tempo restante"), s.eta_s / 60, s.eta_s % 60);
         }
       } else if (s.state == TRS_DONE) {

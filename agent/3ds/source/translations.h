@@ -40,6 +40,8 @@ typedef struct {
   bool zip_mode;          /* the pack is one pacote.zip: downloaded first (zip_done / zip_total while preparing), then extracted */
   uint64_t zip_done, zip_total;
   unsigned fps10;         /* extracting: files per second, times ten */
+  unsigned new_dirs, est_s;       /* confirmation: folders the install has to create, and a rough time (creating a folder is the slowest thing the card does) */
+  unsigned dirs_done, dirs_total; /* extracting: folders of the pack visited so far / in all */
   bool has_record;        /* uninstall: the pack left its own record, so exactly its files are removed */
   unsigned removed;       /* uninstall: files removed */
   tr_error error;

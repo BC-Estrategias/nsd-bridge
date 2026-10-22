@@ -600,9 +600,12 @@ static bool read_record(const tr_pack *p, char *ver, size_t vcap, char *team, si
   return true;
 }
 
+#define EMPTY_MARK ".nsd-empty" /* left in /luma/titles/<ID> after an uninstall that kept the (empty) folders */
 static bool dir_has_patch(const char *id) {
   static char path[110];
   struct stat sb;
+  snprintf(path, sizeof path, LUMA_TITLES "/%s/" EMPTY_MARK, id);
+  if (stat(path, &sb) == 0) return false; /* only the empty folders of a pack that was uninstalled */
   static const char *const names[] = {"romfs", "exefs", "code.ips", "code.bin"};
   size_t i;
   for (i = 0; i < sizeof names / sizeof *names; i++) {
@@ -1037,6 +1040,67 @@ done:
   return ok;
 }
 
+/* How many folders the install will have to create (creating one is by far the slowest thing the card does here: seconds each, where a
+ * file is milliseconds). Counts the folders of the pack that are not on the card yet, measures one real folder creation, and gives a
+ * rough time for the whole install. Skipped for small packs. */
+static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+static void estimate_dirs(const tr_pack *pk, unsigned *new_dirs, unsigned *est_s) {
+  static char path[330], lastd[220], missing[220];
+  char **v = NULL, **u = NULL;
+  unsigned nv = 0, cap = 0, i, nu = 0, count = 0;
+  struct stat sb;
+  *new_dirs = *est_s = 0;
+  lastd[0] = '\x01';
+  lastd[1] = '\0';
+  for (i = 0; i < g_nf; i++) { /* the folder of each file, and every folder above it */
+    const char *rel = file_at(i), *slash = strrchr(rel, '/');
+    char d[220];
+    size_t l, k;
+    if (!slash) continue;
+    l = (size_t)(slash - rel);
+    if (l >= sizeof d) continue;
+    memcpy(d, rel, l);
+    d[l] = '\0';
+    if (!strcmp(d, lastd)) continue;
+    memcpy(lastd, d, l + 1);
+    for (k = 0; k <= l; k++) {
+      if (k != l && d[k] != '/') continue;
+      if (nv + 1 > cap) { char **nvv = realloc(v, (cap ? cap * 2 : 1024) * sizeof *v); if (!nvv) goto out; v = nvv; cap = cap ? cap * 2 : 1024; }
+      v[nv] = strndup(d, k);
+      if (!v[nv]) goto out;
+      nv++;
+    }
+  }
+  if (!nv) goto out;
+  qsort(v, nv, sizeof *v, cmp_str);
+  u = malloc(nv * sizeof *u);
+  if (!u) goto out;
+  for (i = 0; i < nv; i++) if (i == 0 || strcmp(v[i], v[i - 1])) u[nu++] = v[i];
+  if (nu < 20) goto out; /* a few folders are quick whatever happens */
+  missing[0] = '\0';
+  for (i = 0; i < nu && !cancelled(); i++) {
+    size_t ml = strlen(missing);
+    if (ml && !strncmp(u[i], missing, ml) && u[i][ml] == '/') { count++; continue; } /* below a folder that is not there */
+    snprintf(path, sizeof path, LUMA_TITLES "/%s/%s", pk->ref.id, u[i]);
+    if (stat(path, &sb) != 0) { count++; snprintf(missing, sizeof missing, "%s", u[i]); }
+  }
+  *new_dirs = count;
+  if (count) {
+    uint64_t t0, ms;
+    t0 = now_ms(); /* one real creation, timed, and taken away again */
+    mkdir(LUMA_TITLES "/.nsd-probe", 0777);
+    ms = now_ms() - t0;
+    rmdir(LUMA_TITLES "/.nsd-probe");
+    if (ms > 60000) ms = 60000;
+    *est_s = (unsigned)(((uint64_t)count * ms + (uint64_t)g_nf * 80u) / 1000u);
+    alog("Translations: %u of %u folders to create, one took %lu ms: about %u s", count, nu, (unsigned long)ms, *est_s);
+  }
+out:
+  for (i = 0; i < nv; i++) free(v[i]);
+  free(v);
+  free(u);
+}
+
 static void job_prepare(void) {
   tr_pack pk;
   collect c;
@@ -1058,6 +1122,7 @@ static void job_prepare(void) {
   g_st.zip_mode = false;
   g_st.zip_done = g_st.zip_total = 0;
   g_st.fps10 = 0;
+  g_st.new_dirs = g_st.est_s = g_st.dirs_done = g_st.dirs_total = 0;
   g_zip_mode = false;
   g_st.has_record = false;
   g_st.error = TRE_NONE;
@@ -1114,6 +1179,15 @@ static void job_prepare(void) {
   for (i = 0; i < g_nf; i++) total += g_files[i].size;
   if (R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&r)) && (uint64_t)r.freeClusters * r.clusterSize < total + SPACE_MARGIN) { fail(TRE_SPACE, ""); return; }
   if (pk.kind == 1) scan_conflicts(&pk);
+  {
+    unsigned nd = 0, es = 0;
+    estimate_dirs(&pk, &nd, &es);
+    if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
+    LightLock_Lock(&g_lock);
+    g_st.new_dirs = nd;
+    g_st.est_s = es;
+    LightLock_Unlock(&g_lock);
+  }
   LightLock_Lock(&g_lock);
   g_st.files_total = g_nf;
   g_st.bytes_total = total;
@@ -1337,9 +1411,26 @@ static void install_zip(const tr_pack *pk, const char *base) {
   uint64_t bytes = 0, t_a, t_b, t_last = now_ms(), ms_read = 0;
   bool bad = false;
   (void)src_dummy;
+  unsigned dirs_done = 0, dirs_total = 0;
   g_ms_open = g_ms_close = g_ms_ren = g_ms_sd = g_ms_net = 0;
   last_dir[0] = '\x01';
   last_dir[1] = '\0';
+  {
+    /* how many times the folder changes while walking the list: each change may mean creating a folder */
+    char prev[220];
+    prev[0] = '\x01';
+    prev[1] = '\0';
+    for (i = 0; i < g_nf; i++) {
+      const char *rel = file_at(i), *sl2 = strrchr(rel, '/');
+      char cur[220];
+      snprintf(cur, sizeof cur, "%.*s", sl2 ? (int)(sl2 - rel) : 0, rel);
+      if (strcmp(cur, prev)) { dirs_total++; snprintf(prev, sizeof prev, "%s", cur); }
+    }
+    LightLock_Lock(&g_lock);
+    g_st.dirs_total = dirs_total;
+    g_st.dirs_done = 0;
+    LightLock_Unlock(&g_lock);
+  }
   if (!in || !out || !wbuf || !zf) { fail(TRE_IO, "memory"); bad = true; }
   for (i = 0; i < g_nf && !bad && !cancelled(); i++) {
     const zent *e = &g_zent[i];
@@ -1353,7 +1444,7 @@ static void install_zip(const tr_pack *pk, const char *base) {
     if (!tr_path_ok(rel)) { fail(TRE_BADPATH, rel); bad = true; break; }
     slash = strrchr(rel, '/');
     snprintf(dirrel, sizeof dirrel, "%.*s", slash ? (int)(slash - rel) : 0, rel);
-    if (strcmp(dirrel, last_dir)) { t_a = now_ms(); mkdir_p(base, dirrel); g_ms_sd += now_ms() - t_a; snprintf(last_dir, sizeof last_dir, "%s", dirrel); }
+    if (strcmp(dirrel, last_dir)) { t_a = now_ms(); mkdir_p(base, dirrel); g_ms_sd += now_ms() - t_a; snprintf(last_dir, sizeof last_dir, "%s", dirrel); dirs_done++; }
     snprintf(dst, sizeof dst, "%s/%s", base, rel);
     if (pk->kind == 1) {
       int bk = backup_existing(base, pk->ref.team, rel, dst);
@@ -1427,11 +1518,17 @@ static void install_zip(const tr_pack *pk, const char *base) {
       if (t - t_last >= 500) {
         double secs = (double)(t - g_inst_start) / 1000.0;
         double rate = secs > 0 ? (double)done / secs : 0.0;
+        /* the time left counts folders and files apart: a folder costs seconds and a file milliseconds, so a plain files-per-second
+         * estimate is far off while the folders are being built */
+        double dir_s = dirs_done ? (double)g_ms_sd / 1000.0 / (double)dirs_done : 0.0;
+        double file_s = done ? (secs - (double)g_ms_sd / 1000.0) / (double)done : 0.0;
+        double left = (double)(dirs_total - dirs_done) * dir_s + (double)(g_nf - done) * (file_s > 0 ? file_s : 0.0);
         LightLock_Lock(&g_lock);
         g_st.files_done = done;
         g_st.bytes_done = bytes;
+        g_st.dirs_done = dirs_done;
         g_st.fps10 = (unsigned)(rate * 10.0);
-        g_st.eta_s = rate > 0.01 ? (unsigned)((double)(g_nf - done) / rate) : 0;
+        g_st.eta_s = done > 20 ? (unsigned)left : 0;
         touch();
         LightLock_Unlock(&g_lock);
         t_last = t;
@@ -1484,6 +1581,7 @@ static void job_install(void) {
   g_inst_start = now_ms();
   alog("Translations: installing %s v %s (%u files%s)", pk.ref.id, pk.ref.version, g_nf, g_zip_mode ? ", from pacote.zip" : "");
   mkdir_p(base, "");
+  { static char mark[120]; snprintf(mark, sizeof mark, "%s/" EMPTY_MARK, base); remove(mark); }
   g_bytes_base = 0;
   memset(g_fflag, 0, g_nf);
   if (pk.kind == 1) uninstall_by_record(&pk, base); /* an update first puts back what the old version had replaced */
@@ -1659,7 +1757,6 @@ out:
 }
 
 /* ------------------------------------------------------------------------------------------------ uninstall */
-static int cmp_len_desc(const void *a, const void *b) { return (int)strlen(*(char *const *)b) - (int)strlen(*(char *const *)a); }
 
 static void job_uninstall(void) {
   tr_pack pk;
@@ -1697,27 +1794,25 @@ static void job_uninstall(void) {
     touch();
     LightLock_Unlock(&g_lock);
   }
-  /* folders the pack leaves empty, the deepest first (rmdir only succeeds on an empty one) */
+  /* The folders stay: creating a folder takes seconds on this hardware (removing the files takes milliseconds), and an empty folder
+   * does nothing for Luma, so a reinstall or an update of the same pack does not have to build the tree again. */
   if (dirs) {
     unsigned k;
-    qsort(dirs, nd, sizeof *dirs, cmp_len_desc);
-    for (k = 0; k < nd; k++) {
-      char *d = dirs[k];
-      for (;;) {
-        char *s;
-        snprintf(path, sizeof path, "%s/%s", base, d);
-        if (rmdir(path) != 0) break;
-        s = strrchr(d, '/');
-        if (!s) break;
-        *s = '\0';
-      }
-      free(d);
-    }
+    for (k = 0; k < nd; k++) free(dirs[k]);
     free(dirs);
   }
   record_path_of(pk.ref.id, pk.kind, pk.ref.team, path, sizeof path);
   remove(path);
-  rmdir(base); /* only if nothing else is in it */
+  rmdir(base); /* only works when the folder is empty (a pack with no sub-folders) */
+  {
+    struct stat sb;
+    if (stat(base, &sb) == 0) {
+      FILE *m;
+      snprintf(path, sizeof path, "%s/" EMPTY_MARK, base);
+      m = fopen(path, "wb");
+      if (m) { fputs("NSD Bridge: the pack was uninstalled; its empty folders were kept so installing it again is fast.\n", m); fclose(m); }
+    }
+  }
   alog("Translations: %s uninstalled (%u files removed in %lu s)", pk.ref.id, removed, (unsigned long)((now_ms() - t_start) / 1000));
   if (cancelled()) { fail(TRE_CANCELLED, ""); return; }
   set_state(TRS_DONE);

@@ -912,7 +912,7 @@ void installer_pending(unsigned *count, uint64_t *bytes) {
     size_t n = strlen(e->d_name);
     char path[160];
     struct stat sb;
-    if (n < 6 || strcmp(e->d_name + n - 5, ".part") != 0) continue;
+    if (n < 6 || (strcmp(e->d_name + n - 5, ".part") != 0 && strcmp(e->d_name + n - 4, ".zip") != 0)) continue;
     snprintf(path, sizeof path, DL_DIR "/%s", e->d_name);
     if (stat(path, &sb) == 0) { (*count)++; *bytes += (uint64_t)sb.st_size; }
   }
@@ -927,7 +927,7 @@ static void dl_sweep(bool all) {
     size_t n = strlen(e->d_name);
     char path[160];
     struct stat sb;
-    bool mine = n > 4 && (strcmp(e->d_name + n - 5, ".part") == 0 || strcmp(e->d_name + n - 4, ".map") == 0);
+    bool mine = n > 5 && (strcmp(e->d_name + n - 5, ".part") == 0 || strcmp(e->d_name + n - 4, ".map") == 0 || strcmp(e->d_name + n - 4, ".zip") == 0 || strcmp(e->d_name + n - 5, ".ztag") == 0); /* the installer's pieces, and the translation packs' zips */
     if (!mine) continue; /* only files this feature wrote */
     snprintf(path, sizeof path, DL_DIR "/%s", e->d_name);
     if (stat(path, &sb) != 0) continue;

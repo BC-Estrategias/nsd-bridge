@@ -25,7 +25,8 @@ traducoes/
     <TITLE ID> - <game name>/               16 hex digits, " - ", the name shown in the list
       <team>/                               any text without "/" (jumpmanclub-brasil, e4t, desconhecida)
         v<version>/                         v1.2, v2, v1.10 (numbers compare as numbers)
-          arquivos/                         mirror of /luma/titles/<TITLE ID>/ : romfs/..., exefs/..., code.ips
+          pacote.zip                        the pack as ONE file (recommended): paths relative to /luma/titles/<TITLE ID>/
+          arquivos/                         or the same files loose: mirror of /luma/titles/<TITLE ID>/ (used when there is no pacote.zip)
           extras/                           anything else (manuals, covers, readmes): ignored
           pacote.json                       optional
 ```
@@ -53,6 +54,16 @@ Read fields: `equipe` (or `autor`, for a mod), `regiao` and `fonte` (shown on th
 description, under the game's name in the list) and `status` (a warning shown in yellow, for example *experimental*). Without the
 file the folder names are used.
 
+### `pacote.zip` (recommended)
+
+One file instead of thousands of requests. Zip the *contents* of the pack (the `romfs/` and `exefs/` folders, `code.ips`...), stored
+or deflate, no password, no zip64; a leading `arquivos/` folder inside the zip is accepted. Folder entries, `__MACOSX/`, `._*`,
+`.DS_Store`, `Thumbs.db` and `desktop.ini` are ignored. The console downloads it to `/3ds/nintendo-dev-agent/downloads/` (continuing
+a part left there when the share's ETag is the same), reads the index for the confirmation screen, extracts it and deletes it; if
+the extraction is stopped the zip stays and the next install needs no download. A zip with an unsafe path, a repeated name,
+encryption, another method, or more than 20 000 files / 1.5 GiB is refused. Creating a folder takes seconds on a 3DS, so a pack
+with many folders is slow however it is delivered: the confirmation screen says how many it has to create.
+
 ## What the console does
 
 1. **Catalog:** reads the folders (WebDAV `PROPFIND`, one level at a time) and keeps a saved copy in
@@ -67,7 +78,8 @@ file the folder names are used.
    each one tried again up to three times after a server error or a dropped connection; when everything is there the record
    is marked complete. An install that was interrupted shows `!` in the list and is finished by installing again. The record
    is what makes *Uninstall* and the update check possible.
-4. **Uninstall:** with the record, removes exactly the files the pack wrote (and folders left empty). For a `☆` pack (no
+4. **Uninstall:** with the record, removes exactly the files the pack wrote. The folders stay (empty), because creating them again is
+   the slow part of an install; `.nsd-empty` marks them so they are not taken for a hand-made patch. For a `☆` pack (no
    record) it removes only the files that also appear in the share's list for that pack; never the whole folder.
 
 ## Mods
