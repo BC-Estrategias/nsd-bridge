@@ -11,6 +11,7 @@ session.js
 viewer.js
 transfer.js
 install.js
+sources.js
 files.js
 settings.js
 faq.js

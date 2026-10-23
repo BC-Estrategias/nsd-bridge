@@ -36,6 +36,10 @@ typedef enum {
   UI_INST_CANCEL,
   UI_INST_DISMISS,
   UI_TR_LINK,   /* type the link of the translations share */
+  UI_SRC_LINK,      /* type the link of a Sources share */
+  UI_SRC_NEWFOLDER, /* type the name of a new folder under uisrc_dest_path() */
+  UI_SRC_RECV_ON,   /* the Sources screen opened: a SOURCE_LINK request from the browser is taken */
+  UI_SRC_RECV_OFF,  /* the Sources screen closed */
   UI_UPDATE,    /* check for / install an update */
   UI_EXIT,
   UI_PAIR_YES,  /* answer to a pairing request */

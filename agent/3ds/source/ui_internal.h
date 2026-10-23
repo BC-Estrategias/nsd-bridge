@@ -47,4 +47,15 @@ ui_action uitr_handle(u32 down, u32 held, const touchPosition *touch, bool *redr
 void uitr_draw(const ui_model *m);   /* draws both screens */
 void uitr_set_message(const char *m);
 
+/* ---- Sources screen (ui_sources.c) ---- */
+void uisrc_open(void);
+ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bool *leave);
+void uisrc_draw(const ui_model *m);
+const char *uisrc_dest_path(void);       /* the "/roms/gba" folder the destination browser is showing */
+void uisrc_dest_refresh(const char *select); /* re-reads it (e.g. after a folder was created) and selects `select` */
+void uisrc_set_message(const char *m);   /* shown under the "type the link" / destination screens */
+
+/* ---- exported by main.c: true when `path` ("/roms", no "sdmc:") is open for writing ---- */
+bool nsd_write_allowed(const char *path);
+
 #endif

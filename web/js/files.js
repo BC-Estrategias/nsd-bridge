@@ -434,6 +434,7 @@
     fill(actionsEl,
       h("button", { disabled: !canCreate(), onclick: () => filePicker.click() }, icon("upload"), h("span", { text: t("upload") })),
       S.info && S.info.platform === "3ds" ? h("button", { onclick: () => NDP.install.open(one && one.type === "file" && NDP.install.isCia(one.name) ? full(one.name) : null), title: t("inst.hint") }, icon("download"), h("span", { text: t("inst.button") })) : null,
+      S.info && S.info.platform === "3ds" ? h("button", { onclick: () => NDP.sources.open(), title: t("src.hint") }, icon("download"), h("span", { text: t("src.button") })) : null,
       h("button", { disabled: !canCreate(), onclick: newFolder }, icon("plus"), h("span", { text: t("newFolder") })),
       h("button", { disabled: !canCreate(), onclick: newFile }, icon("newfile"), h("span", { text: t("newFile") })),
       h("button" + (trashRoot ? "" : ".trashbtn"), { onclick: openTrash, title: t("trashShortcutHint") }, icon("trash"), h("span", { text: trashRoot ? t("leaveTrash") : t("trash") })),

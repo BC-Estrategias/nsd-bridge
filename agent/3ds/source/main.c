@@ -5,6 +5,7 @@
 #include <3ds.h>
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <malloc.h>
 #include <netinet/in.h>
 #include <stdint.h>
@@ -20,7 +21,9 @@
 #include "titles.h"
 #include "translations.h"
 #include "qr.h"
+#include "sources.h"
 #include "ui.h"
+#include "ui_internal.h"
 #include "updater.h"
 #include "ndp/ndp_access_file.h"
 #include "ndp/ndp_keystore_file.h"
@@ -345,6 +348,31 @@ static bool power_step(bool installing, u32 *down, u32 held, uint64_t now) {
   return woke;
 }
 
+/* A link sent by the browser while the Sources screen is open: handed off to the main thread (which owns sources.c)
+ * instead of being applied from the network thread. */
+#ifndef AGENT_TEXT_UI
+static bool g_src_recv_open = false;
+static LightLock g_src_link_lock;
+static char g_src_link_pending[300];
+static volatile bool g_src_link_ready = false;
+#endif
+
+static int source_link_cb(void *ctx, const char *url, char *detail, size_t cap) {
+  (void)ctx;
+#ifndef AGENT_TEXT_UI
+  if (!g_src_recv_open) { snprintf(detail, cap, "open Sources on the console first"); return NDP_ST_BUSY; }
+  LightLock_Lock(&g_src_link_lock);
+  snprintf(g_src_link_pending, sizeof g_src_link_pending, "%s", url);
+  LightLock_Unlock(&g_src_link_lock);
+  __atomic_store_n(&g_src_link_ready, true, __ATOMIC_RELEASE);
+  return NDP_OK;
+#else
+  (void)url;
+  snprintf(detail, cap, "this build has no Sources screen");
+  return NDP_ST_UNSUPPORTED_COMMAND;
+#endif
+}
+
 static int install_url_cb(void *ctx, const char *url, const char *path, const uint8_t *sha256, const uint8_t *seed, char *detail, size_t cap) {
   (void)ctx;
 #ifndef AGENT_TEXT_UI
@@ -371,6 +399,16 @@ static ndp_keystore g_keys;
 static ndp_access g_access; /* the folders the owner opened (edited on the console, never over the network) */
 static bool g_keys_dirty_warn = false;     /* the last save failed */
 static uint64_t g_forget_armed_until = 0;  /* SELECT pressed once: a second press before this time forgets everything */
+
+#ifndef AGENT_TEXT_UI
+/* Used by the Sources screen's destination picker: true when `path` ("/roms", no "sdmc:") is open for writing, the same rule
+ * the network protocol enforces (a parent folder opened for writing covers its sub-folders; protected zones never qualify). */
+bool nsd_write_allowed(const char *path) {
+  char norm[NDP_PATH_MAX + 1];
+  if (ndp_path_normalize((const uint8_t *)path, strlen(path), norm, sizeof norm) != NDP_OK) return false;
+  return ndp_access_level(&g_access, norm, NULL) == NDP_LVL_WRITE;
+}
+#endif
 
 /* The key store is written by the server after a pairing/forget; it lives in the config folder, which
  * no protocol command can read or write. */
@@ -836,6 +874,7 @@ int main(int argc, char **argv) {
   cfg.random_bytes = random_bytes;
   cfg.device_info = device_info;
   cfg.install_url = install_url_cb;
+  cfg.source_link = source_link_cb;
   if (ndp_posix_fs_init(&g_fs_base, &g_fs_ctx, "sdmc:") == 0) {
     g_fs = g_fs_base;
     g_fs.stat = fs_stat;
@@ -902,6 +941,8 @@ int main(int argc, char **argv) {
   installer_init();
   titles_init();
   tr_init();
+  src_init();
+  LightLock_Init(&g_src_link_lock);
   refresh_pending();
 #else
   (void)argc;
@@ -954,6 +995,16 @@ int main(int argc, char **argv) {
     }
 
 #else
+    if (__atomic_load_n(&g_src_link_ready, __ATOMIC_ACQUIRE)) {
+      char link[300];
+      LightLock_Lock(&g_src_link_lock);
+      snprintf(link, sizeof link, "%s", g_src_link_pending);
+      LightLock_Unlock(&g_src_link_lock);
+      __atomic_store_n(&g_src_link_ready, false, __ATOMIC_RELEASE);
+      if (src_set_link(link)) { alog("Sources: link set from the browser"); uisrc_set_message(""); uisrc_open(); }
+      else alog("Sources: the browser sent a link that was not a Nextcloud/ownCloud share link");
+      draw_pending = true;
+    }
     hidScanInput();
     {
       touchPosition tp;
@@ -1027,6 +1078,43 @@ int main(int argc, char **argv) {
               if (!strcmp(link, "-")) { tr_reset_link(); alog("Translations: back to the default link"); uitr_set_message(""); if (tr_configured()) tr_list(true); }
               else if (tr_set_link(link)) { alog("Translations: link set"); uitr_set_message(""); tr_list(true); }
               else uitr_set_message(ui_pt() ? "Link inválido (https://.../s/código)." : "Invalid link (https://.../s/code).");
+            }
+            draw_pending = true;
+            break;
+          }
+          case UI_SRC_LINK: {
+            static char link[300];
+            SwkbdState kb;
+            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 1, (int)sizeof link - 40);
+            swkbdSetHintText(&kb, "https://.../s/xxxxxxxx");
+            swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+            swkbdSetFeatures(&kb, SWKBD_FIXED_WIDTH);
+            if (src_configured()) snprintf(link, sizeof link, "%s", src_link());
+            else link[0] = '\0';
+            if (swkbdInputText(&kb, link, sizeof link) == SWKBD_BUTTON_CONFIRM && link[0]) {
+              if (src_set_link(link)) { alog("Sources: link set"); uisrc_set_message(""); uisrc_open(); }
+              else uisrc_set_message(ui_pt() ? "Link inválido (https://.../s/código)." : "Invalid link (https://.../s/code).");
+            }
+            draw_pending = true;
+            break;
+          }
+          case UI_SRC_RECV_ON: g_src_recv_open = true; break;
+          case UI_SRC_RECV_OFF: g_src_recv_open = false; break;
+          case UI_SRC_NEWFOLDER: {
+            /* a sub-folder under the destination path the Sources screen is showing, created locally (no network command) */
+            static char name[64], full[432];
+            SwkbdState kb;
+            const char *base = uisrc_dest_path();
+            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 1, (int)sizeof name - 1);
+            swkbdSetHintText(&kb, ui_pt() ? "nome da pasta" : "folder name");
+            swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, SWKBD_FILTER_BACKSLASH, 0);
+            swkbdSetFeatures(&kb, SWKBD_FIXED_WIDTH);
+            name[0] = '\0';
+            if (swkbdInputText(&kb, name, sizeof name) == SWKBD_BUTTON_CONFIRM && name[0] && !strchr(name, '/') && strcmp(name, ".") &&
+                strcmp(name, "..") && nsd_write_allowed(base)) {
+              snprintf(full, sizeof full, "sdmc:%s%s%s", base, strcmp(base, "/") ? "/" : "", name);
+              if (mkdir(full, 0777) == 0 || errno == EEXIST) uisrc_dest_refresh(name);
+              else uisrc_set_message(ui_pt() ? "Não consegui criar a pasta." : "Could not create the folder.");
             }
             draw_pending = true;
             break;
@@ -1185,6 +1273,7 @@ quit:
   aptUnhook(&g_apt_cookie);
   tr_shutdown();
   titles_shutdown();
+  src_shutdown();
   installer_shutdown();
   updater_shutdown();
 #endif

@@ -15,7 +15,7 @@ static C3D_RenderTarget *g_top, *g_bot;
 static C2D_TextBuf g_tb;
 static bool g_ready, g_pt;
 
-enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_TITLES, SCR_TRANSL, SCR_SETTINGS, SCR_COUNT };
+enum { SCR_MAIN, SCR_MCP, SCR_DEVICES, SCR_LOG, SCR_INST, SCR_SD, SCR_RECV, SCR_QR, SCR_TITLES, SCR_TRANSL, SCR_SETTINGS, SCR_SOURCES, SCR_COUNT };
 static int g_screen = SCR_MAIN, g_log_off = 0;
 static int g_sel[SCR_COUNT] = {1, 0, 0, 0, 0, 0, 0, 0}; /* the main menu starts on the row after Updates: a stray A never starts an install */
 static int g_arg;
@@ -119,7 +119,7 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 
 /* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
 /* the main menu: START leaves the app, so there is no "Exit" row; the rarely used rows live under Settings */
-enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_MODS, IT_INSTALLER, IT_COUNT };
+enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_MODS, IT_SOURCES, IT_INSTALLER, IT_COUNT };
 enum { SS_FOLDERS, SS_MODE, SS_PAIRING, SS_LOG, SS_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
 enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SEEDS, SI_COUNT };
@@ -133,6 +133,7 @@ static const char *item_name(int i) {
     case IT_TITLES: return UI_T("Titles", "Títulos");
     case IT_TRANSL: return UI_T("Translations", "Traduções");
     case IT_MODS: return "Mods";
+    case IT_SOURCES: return UI_T("Sources", "Fontes");
     default: return UI_T("Installer", "Instalador");
   }
 }
@@ -177,6 +178,7 @@ static ui_action activate(const ui_model *m) {
       case IT_TITLES: uit_open(); go(SCR_TITLES); return UI_NONE;
       case IT_TRANSL: uitr_open(0); go(SCR_TRANSL); return UI_NONE;
       case IT_MODS: uitr_open(1); go(SCR_TRANSL); return UI_NONE;
+      case IT_SOURCES: uisrc_open(); go(SCR_SOURCES); return UI_SRC_RECV_ON;
       default: break;
     }
     return UI_NONE;
@@ -229,6 +231,12 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
     bool leave = false;
     ui_action a = uitr_handle(down, held, touch, redraw, &leave);
     if (leave) { go(SCR_MAIN); *redraw = true; }
+    return a;
+  }
+  if (g_screen == SCR_SOURCES) {
+    bool leave = false;
+    ui_action a = uisrc_handle(down, held, touch, redraw, &leave);
+    if (leave) { go(SCR_MAIN); *redraw = true; return UI_SRC_RECV_OFF; }
     return a;
   }
   if (g_screen == SCR_TITLES) {
@@ -525,6 +533,12 @@ void ui_draw(const ui_model *m) {
   }
   if (g_screen == SCR_TRANSL) {
     uitr_draw(m);
+    if (m->pairing == 2) draw_pair_request(m);
+    ui_end();
+    return;
+  }
+  if (g_screen == SCR_SOURCES) {
+    uisrc_draw(m);
     if (m->pairing == 2) draw_pair_request(m);
     ui_end();
     return;

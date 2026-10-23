@@ -58,6 +58,14 @@ typedef struct {
   int (*install_url)(void *ctx, const char *url, const char *path, const uint8_t *sha256 /* NULL, or the 32-byte hash the file must have */,
                      const uint8_t *seed /* NULL, or the 16-byte seed of the title */, char *detail, size_t detail_cap);
   void *install_url_ctx;
+  /* Optional. SOURCE_LINK: sets the share the Sources screen browses. Taken only while that screen is open (so a page on the
+   * LAN cannot silently redirect it while the owner is doing something else); applied without a further confirmation, since
+   * unlike INSTALL_URL nothing is downloaded or run by this command alone. Returns NDP_OK when taken; otherwise a status
+   * (NDP_ST_BUSY with a `detail` text when the screen is not open, NDP_ST_BAD_REQUEST for a link the platform could not
+   * parse). NULL => the command answers UNSUPPORTED_COMMAND. The URL has been checked (http/https, printable ASCII, no
+   * spaces) but not that it is actually a Nextcloud/ownCloud share: the platform checks that. */
+  int (*source_link)(void *ctx, const char *url, char *detail, size_t detail_cap);
+  void *source_link_ctx;
   /* Set by the server per connection: a small id for the connection and its peer address (for the pairing prompt). */
   int conn_id;
   const char *peer;

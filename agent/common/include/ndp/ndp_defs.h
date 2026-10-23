@@ -46,7 +46,8 @@ enum ndp_command {
   NDP_CMD_FS_DELETE = 0x0033,
   NDP_CMD_FS_PURGE = 0x0034,
   NDP_CMD_FS_COPY = 0x0035,
-  NDP_CMD_INSTALL_URL = 0x0040 /* asks the console to offer installing a title from a URL (the owner confirms on the console) */
+  NDP_CMD_INSTALL_URL = 0x0040, /* asks the console to offer installing a title from a URL (the owner confirms on the console) */
+  NDP_CMD_SOURCE_LINK = 0x0041  /* sets the share the Sources screen browses; taken only while that screen is open */
 };
 
 enum ndp_fs_type { NDP_TYPE_FILE = 1, NDP_TYPE_DIR = 2 };
@@ -142,7 +143,7 @@ enum ndp_tag {
   NDP_TAG_PAIR_NONCE = 0x0062,
   NDP_TAG_PAIR_STATE = 0x0063,
   NDP_TAG_PAIR_ENTRY = 0x0064, /* PAIR_LIST response, one per paired key: key_id(4) || label (UTF-8, no NUL) */
-  NDP_TAG_URL = 0x0065, /* INSTALL_URL REQ: an http:// or https:// URL (UTF-8, no NUL, at most NDP_URL_MAX bytes) */
+  NDP_TAG_URL = 0x0065, /* INSTALL_URL / SOURCE_LINK REQ: an http:// or https:// URL (UTF-8, no NUL, at most NDP_URL_MAX bytes) */
   NDP_TAG_SEED = 0x0066 /* INSTALL_URL REQ: optional 16-byte seed the title needs (registered with the system after the install) */
 };
 

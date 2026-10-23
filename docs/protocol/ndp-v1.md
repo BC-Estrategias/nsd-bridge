@@ -110,6 +110,7 @@ Depois do AUTH, qualquer chave pareada pode **ver e apagar qualquer pareamento d
 | 0x0033 | FS_DELETE | M5 ✔ | **move** para a lixeira (nunca apaga de verdade) |
 | 0x0035 | FS_COPY | ✔ (1.3.0) | copia UM arquivo dentro do cartão, em passos, feita pelo console |
 | 0x0040 | INSTALL_URL | ✔ (1.8.0, só 3DS) | pede ao console que ofereça instalar um título de uma URL; o dono confirma no console |
+| 0x0041 | SOURCE_LINK | ✔ (2.2.0, só 3DS) | define o link que a tela Fontes navega; só aceito com essa tela aberta, aplica sem confirmação |
 | 0x0034 | FS_PURGE | ✔ (1.2.2) | apaga **de verdade**, só o que está dentro de uma lixeira (ou esvazia a lixeira) |
 | 0x0040+ | LOG_* / CRASH_* | fase 3 | |
 | 0x8000–0xFFFF | reservado a extensões de plataforma | | |
@@ -341,6 +342,9 @@ Agent  → RES {written, sha256, replaced}       (ou ERR)
 
 ### INSTALL_URL (0x0040, agente ≥ 1.8.0, só 3DS)
 REQ: **uma** destas: `url`, ou `path` (um `.cia` que já está no cartão SD do console, por exemplo o que a página acabou de enviar; caminho absoluto, só `.cia`); e, opcionalmente, `sha256` (32 bytes: o hash que o arquivo deve ter; o console o confere antes de finalizar a instalação e cancela se diferir). O agente valida (http/https, ASCII imprimível, sem espaços) e entrega ao console, que **só aceita enquanto a tela "Receber do navegador" do instalador está aberta** e, antes de baixar qualquer coisa, mostra a origem e o título e pede a confirmação do dono (A). RES vazio = o pedido foi recebido (não que foi instalado). Erros: `UNSUPPORTED_COMMAND` (DSi/outro), `BAD_REQUEST` (URL inválida), `BUSY` com `detail` (tela fechada, ou já há um pedido aguardando confirmação). Vale para conexões autenticadas e, quando o console serve a página sem pareamento, para a página também: a proteção é a tela aberta + a confirmação.
+
+### SOURCE_LINK (0x0041, agente ≥ 2.2.0, só 3DS)
+REQ: `url` (um link público `http://` ou `https://`, ASCII imprimível, sem espaços). O agente valida o formato e entrega ao console, que **só aceita enquanto a tela Fontes está aberta** (evita que algo na rede troque o link enquanto o dono está em outra parte do app) e, se aceito, **aplica na hora, sem pedir confirmação**: ao contrário de INSTALL_URL, este comando sozinho não baixa nem executa nada — só troca de onde a tela Fontes lê a listagem de pastas. O console ainda confere se é um link Nextcloud/ownCloud válido antes de salvar. RES vazio = o link foi aplicado. Erros: `UNSUPPORTED_COMMAND` (DSi/outro/build sem a tela), `BAD_REQUEST` (URL malformada, ou que o console não reconheceu como um link de compartilhamento válido), `BUSY` com `detail` (a tela Fontes não está aberta). Vale para conexões autenticadas e, quando o console serve a página sem pareamento, para a página também: a proteção é a tela aberta, não uma confirmação.
 
 ### FS_COPY (0x0035, agente ≥ 1.3.0)
 `REQ {path, new_path, copy_mode?}` → `RES {copied, total_size, more}`. Copia **um arquivo** dentro do cartão, **feita pelo console** (os dados não passam pelo cliente), em passos limitados (1 MiB por pedido). O destino só aparece no último passo: o console escreve em `<new_path>.ndp-tmp` e o **renomeia** no fim, então uma falha nunca deixa um destino pela metade. O cliente repete o pedido (com `copy_mode` 0) enquanto `more = 1`; a posição do passo é o tamanho do temporário (nada é guardado entre pedidos). O primeiro pedido DEVE levar `copy_mode = 1` (descarta um temporário de outra cópia, para nunca misturar arquivos); `copy_mode = 2` descarta a cópia parcial (cancelar/erro).

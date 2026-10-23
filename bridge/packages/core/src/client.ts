@@ -599,6 +599,13 @@ export class NdpClient {
     await this.request(Command.INSTALL_URL, encodeTlv(fields));
   }
 
+  /** Sets the share a 3DS's Sources screen browses. The console takes it only while that screen is open on the console
+   * (so a page elsewhere on the network cannot redirect it while the owner is doing something else); it applies at once,
+   * with no further confirmation, since this alone downloads or runs nothing. */
+  async sourceLink(url: string): Promise<void> {
+    await this.request(Command.SOURCE_LINK, encodeTlv([[Tag.URL, str(url)]]));
+  }
+
   async stat(path: string): Promise<FsStat> {
     const res = await this.request(Command.FS_STAT, encodeTlv([[Tag.PATH, str(normalizePath(path))]]));
     const t = parseTlv(res.payload);

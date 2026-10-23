@@ -187,6 +187,30 @@ static size_t do_install_url(ndp_agent *a, const ndp_header *req, const uint8_t 
   return ndp_agent_finish(out, cap, req, NDP_KIND_RES, NDP_OK, &w);
 }
 
+/* SOURCE_LINK: validates the URL, then hands it to the platform (taken only while the Sources screen is open). */
+static size_t do_source_link(ndp_agent *a, const ndp_header *req, const uint8_t *pl, uint8_t *out, size_t cap) {
+  const uint8_t *u = NULL;
+  size_t lu = 0, i;
+  char url[NDP_URL_MAX + 1], detail[96];
+  int rc;
+  ndp_tlv_w w;
+  if (!a->cfg.source_link) return ndp_agent_error(out, cap, req, NDP_ST_UNSUPPORTED_COMMAND, "unknown command", 0);
+  if (!ndp_tlv_find(pl, req->payload_len, NDP_TAG_URL, &u, &lu) || lu == 0 || lu > NDP_URL_MAX)
+    return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url required", 0);
+  for (i = 0; i < lu; i++)
+    if (u[i] <= 0x20 || u[i] >= 0x7F) return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url must be printable ASCII without spaces", 0);
+  memcpy(url, u, lu);
+  url[lu] = '\0';
+  if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0)
+    return ndp_agent_error(out, cap, req, NDP_ST_BAD_REQUEST, "url must start with http:// or https://", 0);
+  detail[0] = '\0';
+  rc = a->cfg.source_link(a->cfg.source_link_ctx, url, detail, sizeof detail);
+  if (rc != NDP_OK) return ndp_agent_error(out, cap, req, (uint16_t)rc, detail[0] ? detail : "the console cannot take this request now", 0);
+  if (cap < NDP_HEADER_SIZE) return 0;
+  ndp_tlv_w_init(&w, out + NDP_HEADER_SIZE, cap - NDP_HEADER_SIZE);
+  return ndp_agent_finish(out, cap, req, NDP_KIND_RES, NDP_OK, &w);
+}
+
 static size_t handle_inner(ndp_agent *a, const ndp_header *req, const uint8_t *payload, uint8_t *out,
                            size_t cap) {
   if (req->version != NDP_PROTOCOL_VERSION)
@@ -221,6 +245,7 @@ static size_t handle_inner(ndp_agent *a, const ndp_header *req, const uint8_t *p
   if (req->command == NDP_CMD_ACCESS_INFO) return do_access_info(a, req, out, cap);
   if (req->command == NDP_CMD_DEVICE_INFO) return do_device_info(a, req, out, cap);
   if (req->command == NDP_CMD_INSTALL_URL) return do_install_url(a, req, payload, out, cap);
+  if (req->command == NDP_CMD_SOURCE_LINK) return do_source_link(a, req, payload, out, cap);
   if (req->command == NDP_CMD_PAIR_LIST) return ndp_agent_pair_list(a, req, out, cap);
   if (req->command == NDP_CMD_PAIR_FORGET) return ndp_agent_pair_forget(a, req, payload, out, cap);
   if (a->cfg.fs && (req->command == NDP_CMD_FS_LIST || req->command == NDP_CMD_FS_STAT ||
