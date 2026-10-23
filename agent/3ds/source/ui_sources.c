@@ -17,8 +17,10 @@
 #include "ui_internal.h"
 
 enum { USRC_BROWSE, USRC_DEST, USRC_CONFIRM };
+enum { UMODE_MANAGE, UMODE_BROWSE }; /* MANAGE (Settings): just the link. BROWSE (Installer): the file picker below. */
 #define DST_MAX 256
 
+static int g_mode = UMODE_BROWSE;
 static int ust = USRC_BROWSE;
 static int sel, top;                 /* the source listing */
 static char browse_path[400] = "";   /* what is shown / was last asked for */
@@ -65,7 +67,17 @@ static void sel_clamp(int n) {
   if (top < 0) top = 0;
 }
 
-void uisrc_open(void) {
+/* Settings -> "Download sources": just the link, no browsing. */
+void uisrc_open_manage(void) {
+  g_mode = UMODE_MANAGE;
+  link_msg[0] = '\0';
+}
+
+bool uisrc_is_browsing(void) { return g_mode == UMODE_BROWSE; }
+
+/* Installer -> "Download from a source": the file picker (needs a link already set in Settings). */
+void uisrc_open_browse(void) {
+  g_mode = UMODE_BROWSE;
   ust = USRC_BROWSE;
   sel = top = 0;
   browse_path[0] = '\0';
@@ -160,6 +172,13 @@ static void browse_activate(void) {
 ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bool *leave) {
   src_status s;
   *leave = false;
+
+  if (g_mode == UMODE_MANAGE) {
+    if ((down & KEY_A) || ((down & KEY_TOUCH) && tap_in(touch, 50, 70, 320, 130))) return UI_SRC_LINK;
+    if ((down & (KEY_B | KEY_START)) || ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40)) { *leave = true; *redraw = true; }
+    return UI_NONE;
+  }
+
   src_get(&s);
 
   if (s.state == SRS_DOWNLOADING) {
@@ -173,7 +192,6 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
   }
 
   if (!src_configured()) {
-    if ((down & KEY_A) || ((down & KEY_TOUCH) && tap_in(touch, 50, 70, 320, 130))) return UI_SRC_LINK;
     if ((down & (KEY_B | KEY_START)) || ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40)) { *leave = true; *redraw = true; }
     return UI_NONE;
   }
@@ -235,7 +253,6 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
     }
     if (down & (KEY_DDOWN | KEY_CPAD_DOWN)) { if (n) sel = (sel + 1) % n; *redraw = true; }
     else if (down & (KEY_DUP | KEY_CPAD_UP)) { if (n) sel = (sel + n - 1) % n; *redraw = true; }
-    else if (down & KEY_SELECT) return UI_SRC_LINK;
     else if ((down & KEY_A) && n) { browse_activate(); *redraw = true; }
     else if (down & (KEY_B | KEY_START)) {
       if (!browse_path[0]) { *leave = true; }
@@ -269,8 +286,27 @@ void uisrc_draw(const ui_model *m) {
   src_status s;
   char val[48], sz[24];
   int i;
-  src_get(&s);
   top_header(m);
+
+  if (g_mode == UMODE_MANAGE) {
+    if (src_configured()) {
+      ui_text(12, 40, 0.45f, COL_DIM, 0, "%s", UI_T("Link:", "Link:"));
+      ui_text(12, 60, 0.4f, COL_WHITE, 0, "%.60s", src_link());
+      ui_text(12, 90, 0.4f, COL_DIM, 0, "%s", UI_T("Used by Installer > Download from a source.", "Usado por Instalador > Baixar de uma fonte."));
+    } else {
+      ui_text(12, 40, 0.5f, COL_WHITE, 0, "%s", UI_T("No source yet.", "Ainda sem fonte."));
+      ui_text(12, 66, 0.4f, COL_DIM, 0, "%s", UI_T("Paste the public link of a Nextcloud folder", "Cole o link público de uma pasta do Nextcloud"));
+      ui_text(12, 82, 0.4f, COL_DIM, 0, "%s", UI_T("(https://.../s/xxxxxxx). Type \"-\" to remove it.", "(https://.../s/xxxxxxx). Digite \"-\" para remover."));
+    }
+    ui_scene_bottom(COL_BOT_BG);
+    ui_bottom_chrome(UI_T("Download sources", "Fontes de download"), UI_T("< Settings  (B: back)", "< Configurações  (B: voltar)"),
+                      src_configured() ? UI_T("A: Edit the link", "A: Editar o link") : UI_T("A: Type the link", "A: Digitar o link"));
+    button(85, 90, UI_RGB(0x4c, 0xaf, 0x50), src_configured() ? UI_T("A: Edit", "A: Editar") : UI_T("A: Link", "A: Link"));
+    if (link_msg[0]) ui_text(160, 160, 0.42f, COL_INK_RED, UI_CENTER, "%s", link_msg);
+    return;
+  }
+
+  src_get(&s);
 
   if (s.state == SRS_DOWNLOADING || s.state == SRS_DONE || s.state == SRS_ERROR) {
     if (s.state == SRS_DOWNLOADING) {
@@ -309,13 +345,10 @@ void uisrc_draw(const ui_model *m) {
   }
 
   if (!src_configured()) {
-    ui_text(12, 40, 0.5f, COL_WHITE, 0, "%s", UI_T("No source yet.", "Ainda sem fonte."));
-    ui_text(12, 66, 0.4f, COL_DIM, 0, "%s", UI_T("Paste the public link of a Nextcloud folder", "Cole o link público de uma pasta do Nextcloud"));
-    ui_text(12, 82, 0.4f, COL_DIM, 0, "%s", UI_T("(https://.../s/xxxxxxx). You choose what to browse.", "(https://.../s/xxxxxxx). Você escolhe o que navegar."));
+    ui_text(12, 40, 0.5f, COL_WHITE, 0, "%s", UI_T("No source set yet.", "Ainda sem fonte definida."));
+    ui_text(12, 66, 0.4f, COL_DIM, 0, "%s", UI_T("Settings > Download sources sets the link.", "Configurações > Fontes de download define o link."));
     ui_scene_bottom(COL_BOT_BG);
-    ui_bottom_chrome(UI_T("Sources", "Fontes"), UI_T("< Back  (B)", "< Voltar  (B)"), UI_T("A: Type the link", "A: Digitar o link"));
-    button(85, 90, UI_RGB(0x4c, 0xaf, 0x50), UI_T("A: Link", "A: Link"));
-    if (link_msg[0]) ui_text(160, 160, 0.42f, COL_INK_RED, UI_CENTER, "%s", link_msg);
+    ui_bottom_chrome(UI_T("Sources", "Fontes"), UI_T("< Back  (B)", "< Voltar  (B)"), UI_T("B: Back", "B: Voltar"));
     return;
   }
 
@@ -342,7 +375,7 @@ void uisrc_draw(const ui_model *m) {
     ui_scene_bottom(COL_BOT_BG);
     snprintf(title, sizeof title, "< %s", dst.path);
     ui_bottom_chrome(w ? UI_T("Writable", "Pode escrever") : UI_T("Read-only", "Só leitura"), title,
-                      w ? UI_T("A: Open   X: Download here   Y: New folder", "A: Abrir   X: Baixar aqui   Y: Nova pasta") : UI_T("A: Open   B: Back", "A: Abrir   B: Voltar"));
+                      w ? UI_T("A: Open   X: Choose this folder   Y: New folder", "A: Abrir   X: Escolher esta pasta   Y: Nova pasta") : UI_T("A: Open   B: Back", "A: Abrir   B: Voltar"));
     if (dst.n == 0) ui_text(160, 100, 0.5f, COL_DIM, UI_CENTER, "%s", UI_T("No sub-folders here.", "Nenhuma subpasta aqui."));
     for (i = dst.top; i < dst.n && i < dst.top + UI_LIST_ROWS; i++)
       ui_list_row(i, dst.sel, dst.top, dst.e[i].name, "", COL_INK);
@@ -360,7 +393,7 @@ void uisrc_draw(const ui_model *m) {
     const char *t = s.http_code >= 500 ? UI_T("Server is down.", "Servidor fora do ar.") : UI_T("Could not reach the share.", "Não conseguiu acessar o link.");
     ui_text(200, 110, 0.5f, COL_RED, UI_CENTER, "%s", t);
     ui_scene_bottom(COL_BOT_BG);
-    ui_bottom_chrome(UI_T("Sources", "Fontes"), UI_T("Failed", "Falhou"), UI_T("B: Back   SELECT: Link", "B: Voltar   SELECT: Link"));
+    ui_bottom_chrome(UI_T("Sources", "Fontes"), UI_T("Failed", "Falhou"), UI_T("B: Back", "B: Voltar"));
     return;
   }
   {
@@ -368,14 +401,14 @@ void uisrc_draw(const ui_model *m) {
     char title[420];
     ui_scene_bottom(COL_BOT_BG);
     snprintf(title, sizeof title, "< /%s", browse_path);
-    ui_bottom_chrome(UI_T("Sources", "Fontes"), title, UI_T("A: Open   SELECT: Link", "A: Abrir   SELECT: Link"));
+    ui_bottom_chrome(UI_T("Sources", "Fontes"), title, UI_T("A: Open", "A: Abrir"));
     if (n == 0) ui_text(160, 100, 0.5f, COL_DIM, UI_CENTER, "%s", UI_T("Nothing here.", "Nada aqui."));
     for (i = top; i < n && i < top + UI_LIST_ROWS; i++) {
       const src_entry *e = src_at(i);
       char nm[140];
-      snprintf(nm, sizeof nm, "%s %.34s", e->is_dir ? "\xF0\x9F\x93\x81" : " ", e->name); /* folder emoji */
+      snprintf(nm, sizeof nm, "%.34s%s", e->name, e->is_dir ? "/" : ""); /* the font has no folder glyph: a trailing "/" marks one */
       if (e->is_dir) val[0] = '\0'; else fmt_size(val, sizeof val, e->size);
-      ui_list_row(i, sel, top, nm, val, COL_INK);
+      ui_list_row(i, sel, top, nm, val, e->is_dir ? COL_INK_GREEN : COL_INK);
     }
   }
 }

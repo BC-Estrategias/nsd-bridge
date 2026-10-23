@@ -122,7 +122,7 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_MODS, IT_INSTALLER, IT_COUNT };
 enum { SS_FOLDERS, SS_MODE, SS_PAIRING, SS_SOURCES, SS_LOG, SS_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
-enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SEEDS, SI_COUNT };
+enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SOURCE, SI_SEEDS, SI_COUNT };
 
 int ui_arg(void) { return g_arg; }
 
@@ -187,7 +187,7 @@ static ui_action activate(const ui_model *m) {
       case SS_FOLDERS: return UI_FOLDERS;
       case SS_MODE: return UI_MODE;
       case SS_PAIRING: go(SCR_MCP); return UI_NONE;
-      case SS_SOURCES: uisrc_open(); go(SCR_SOURCES); return UI_SRC_RECV_ON;
+      case SS_SOURCES: uisrc_open_manage(); go(SCR_SOURCES); return UI_SRC_RECV_ON;
       default: g_log_off = 0; go(SCR_LOG); return UI_NONE;
     }
   }
@@ -205,6 +205,7 @@ static ui_action activate(const ui_model *m) {
       case SI_RECV: go(SCR_RECV); return UI_INST_RECV_ON;
       case SI_QR: go(SCR_QR); return UI_INST_QR_ON;
       case SI_PENDING: return UI_INST_CLEAN;
+      case SI_SOURCE: uisrc_open_browse(); go(SCR_SOURCES); return UI_SRC_RECV_ON;
       default: return UI_INST_SEEDS;
     }
   }
@@ -235,8 +236,9 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
   }
   if (g_screen == SCR_SOURCES) {
     bool leave = false;
+    bool browsing = uisrc_is_browsing();
     ui_action a = uisrc_handle(down, held, touch, redraw, &leave);
-    if (leave) { go(SCR_SETTINGS); *redraw = true; return UI_SRC_RECV_OFF; }
+    if (leave) { go(browsing ? SCR_INST : SCR_SETTINGS); *redraw = true; return UI_SRC_RECV_OFF; }
     return a;
   }
   if (g_screen == SCR_TITLES) {
@@ -481,6 +483,7 @@ static void draw_installer(const ui_model *m) {
   ui_list_row(SI_RECV, g_sel[SCR_INST], 0, UI_T("Receive from the browser", "Receber do navegador"), val, COL_INK);
   ui_list_row(SI_QR, g_sel[SCR_INST], 0, UI_T("Scan a QR code", "Escanear QR Code"), val, COL_INK);
   ui_list_row(SI_PENDING, g_sel[SCR_INST], 0, UI_T("Clear partial downloads", "Limpar downloads parciais"), m->pending_msg, COL_INK);
+  ui_list_row(SI_SOURCE, g_sel[SCR_INST], 0, UI_T("Download from a source", "Baixar de uma fonte"), val, COL_INK);
   if (m->seeds_dir) ui_list_row(SI_SEEDS, g_sel[SCR_INST], 0, UI_T("Register seeds (/fbi/seed)", "Registrar seeds (/fbi/seed)"), m->seed_msg, COL_INK);
   ui_text(160, 206, 0.36f, COL_DIM, UI_CENTER, "%s", UI_T("Seeds: the key some newer games need to open.", "Seeds: a chave que alguns jogos mais novos exigem para abrir."));
 }

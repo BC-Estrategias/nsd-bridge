@@ -1001,7 +1001,11 @@ int main(int argc, char **argv) {
       snprintf(link, sizeof link, "%s", g_src_link_pending);
       LightLock_Unlock(&g_src_link_lock);
       __atomic_store_n(&g_src_link_ready, false, __ATOMIC_RELEASE);
-      if (src_set_link(link)) { alog("Sources: link set from the browser"); uisrc_set_message(""); uisrc_open(); }
+      if (src_set_link(link)) {
+        alog("Sources: link set from the browser");
+        uisrc_set_message("");
+        if (uisrc_is_browsing()) uisrc_open_browse(); /* re-reads from the new share, from its root */
+      }
       else alog("Sources: the browser sent a link that was not a Nextcloud/ownCloud share link");
       draw_pending = true;
     }
@@ -1092,7 +1096,8 @@ int main(int argc, char **argv) {
             if (src_configured()) snprintf(link, sizeof link, "%s", src_link());
             else link[0] = '\0';
             if (swkbdInputText(&kb, link, sizeof link) == SWKBD_BUTTON_CONFIRM && link[0]) {
-              if (src_set_link(link)) { alog("Sources: link set"); uisrc_set_message(""); uisrc_open(); }
+              if (!strcmp(link, "-")) { src_forget_link(); alog("Sources: link removed"); uisrc_set_message(""); }
+              else if (src_set_link(link)) { alog("Sources: link set"); uisrc_set_message(""); }
               else uisrc_set_message(ui_pt() ? "Link inválido (https://.../s/código)." : "Invalid link (https://.../s/code).");
             }
             draw_pending = true;

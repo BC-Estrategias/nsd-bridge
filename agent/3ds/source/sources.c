@@ -35,6 +35,41 @@ static char g_list_path[400]; /* what src_list() asked for; the worker reads thi
 static src_entry *g_entries;
 static int g_ne;
 static src_status g_st;
+static bool g_quiet_refresh; /* this run of job_list() is a background revalidation of a folder already on screen: no spinner */
+
+/* The last folders read, kept in memory for the session: entering one again shows it at once while a revalidation (quiet,
+ * best-effort) runs behind it. Session-only (lost when the app closes), small, FIFO. */
+#define CACHE_MAX 24
+typedef struct { char path[400]; src_entry *entries; int n; } cache_ent;
+static cache_ent g_cache[CACHE_MAX];
+static int g_cache_n, g_cache_next;
+
+static const cache_ent *cache_find(const char *path) {
+  int i;
+  for (i = 0; i < g_cache_n; i++) if (!strcmp(g_cache[i].path, path)) return &g_cache[i];
+  return NULL;
+}
+static void cache_store(const char *path, const src_entry *entries, int n) {
+  int i = -1, k;
+  for (k = 0; k < g_cache_n; k++) if (!strcmp(g_cache[k].path, path)) { i = k; break; }
+  if (i < 0) {
+    if (g_cache_n < CACHE_MAX) i = g_cache_n++;
+    else { i = g_cache_next; g_cache_next = (g_cache_next + 1) % CACHE_MAX; }
+  }
+  free(g_cache[i].entries);
+  g_cache[i].entries = NULL;
+  g_cache[i].n = 0;
+  if (n > 0) {
+    g_cache[i].entries = malloc((size_t)n * sizeof *entries);
+    if (g_cache[i].entries) { memcpy(g_cache[i].entries, entries, (size_t)n * sizeof *entries); g_cache[i].n = n; }
+  }
+  snprintf(g_cache[i].path, sizeof g_cache[i].path, "%s", path);
+}
+static void cache_clear(void) {
+  int i;
+  for (i = 0; i < g_cache_n; i++) { free(g_cache[i].entries); g_cache[i].entries = NULL; }
+  g_cache_n = g_cache_next = 0;
+}
 
 static bool cancelled(void) { return __atomic_load_n(&g_cancel, __ATOMIC_ACQUIRE) || aptShouldClose(); }
 static void touch(void) { g_st.revision++; }
@@ -100,8 +135,21 @@ bool src_set_link(const char *url) {
   g_st.state = SRS_IDLE;
   touch();
   LightLock_Unlock(&g_lock);
+  cache_clear(); /* the cached folders belonged to the old share */
   load_config();
   return g_cfg;
+}
+
+void src_forget_link(void) {
+  remove(CONFIG_PATH);
+  LightLock_Lock(&g_lock);
+  g_ne = 0;
+  g_cur_path[0] = '\0';
+  g_st.state = SRS_IDLE;
+  touch();
+  LightLock_Unlock(&g_lock);
+  cache_clear();
+  load_config();
 }
 
 int src_count(void) { return g_ne; }
@@ -245,43 +293,56 @@ static const char PROPFIND_BODY[] =
     "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>";
 
 /* ------------------------------------------------------------------------------------------------ listing */
+static char g_job_path[400]; /* the path this job was asked to list, fixed at the start (g_list_path may move on if the owner
+                               * navigates while a quiet background refresh is still running) */
 static void job_list(void) {
   static char p[420];
   dav_entry *es;
+  src_entry *out;
   buf b = {0, 0, 0, 2u * 1024u * 1024u, false};
   int n, i, ni;
+  bool quiet = g_quiet_refresh;
+  snprintf(g_job_path, sizeof g_job_path, "%s", g_list_path);
+  if (!quiet) set_state(SRS_LISTING); /* a cache hit already shows something: no spinner for the refresh behind it */
   es = malloc(ES_MAX * sizeof *es);
-  if (!es) { fail(SRE_IO, "memory"); return; }
-  if (g_list_path[0]) snprintf(p, sizeof p, "%s/", g_list_path);
+  out = malloc(ES_MAX * sizeof *out);
+  if (!es || !out) { free(es); free(out); if (!quiet) fail(SRE_IO, "memory"); return; }
+  if (g_job_path[0]) snprintf(p, sizeof p, "%s/", g_job_path);
   else p[0] = '\0';
   if (!http("PROPFIND", p, "1", PROPFIND_BODY, sink_buf, &b)) {
     free(b.p);
     free(es);
-    net_fail("listing");
+    free(out);
+    if (!quiet) net_fail("listing"); /* a failed quiet revalidation keeps whatever is already on screen, silently */
+    else alog("Sources: background refresh of \"%s\" failed (curl %d, HTTP %ld)", g_job_path, g_net_code, g_http_code);
     return;
   }
   n = b.p ? dav_parse(b.p, b.n, es, ES_MAX) : 0;
   free(b.p);
-  if (cancelled()) { free(es); fail(SRE_CANCELLED, ""); return; }
+  if (cancelled()) { free(es); free(out); if (!quiet) fail(SRE_CANCELLED, ""); return; }
   ni = n < ES_MAX ? n : ES_MAX;
   for (i = 0; i < ni; i++) {
-    g_entries[i].is_dir = es[i].is_dir;
-    g_entries[i].size = es[i].size;
-    snprintf(g_entries[i].name, sizeof g_entries[i].name, "%s", es[i].name);
+    out[i].is_dir = es[i].is_dir;
+    out[i].size = es[i].size;
+    snprintf(out[i].name, sizeof out[i].name, "%s", es[i].name);
   }
   free(es);
-  g_ne = ni;
   /* folders first, then alphabetically (case-insensitive) */
-  for (i = 1; i < g_ne; i++) {
-    src_entry key = g_entries[i];
+  for (i = 1; i < ni; i++) {
+    src_entry key = out[i];
     int j = i - 1;
-    while (j >= 0 && (g_entries[j].is_dir < key.is_dir || (g_entries[j].is_dir == key.is_dir && strcasecmp(g_entries[j].name, key.name) > 0))) {
-      g_entries[j + 1] = g_entries[j];
+    while (j >= 0 && (out[j].is_dir < key.is_dir || (out[j].is_dir == key.is_dir && strcasecmp(out[j].name, key.name) > 0))) {
+      out[j + 1] = out[j];
       j--;
     }
-    g_entries[j + 1] = key;
+    out[j + 1] = key;
   }
-  snprintf(g_cur_path, sizeof g_cur_path, "%s", g_list_path);
+  cache_store(g_job_path, out, ni);
+  if (strcmp(g_job_path, g_list_path) != 0) { free(out); return; } /* the owner moved on while this (quiet) job was running */
+  memcpy(g_entries, out, (size_t)ni * sizeof *out);
+  free(out);
+  g_ne = ni;
+  snprintf(g_cur_path, sizeof g_cur_path, "%s", g_job_path);
   alog("Sources: %d entries at \"%s\"", g_ne, g_cur_path[0] ? g_cur_path : "/");
   set_state(SRS_READY);
 }
@@ -350,6 +411,7 @@ static void job_download(void) {
   dsink ds;
   bool ok;
   const src_entry *e;
+  set_state(SRS_DOWNLOADING);
   if (g_dl_idx < 0 || g_dl_idx >= g_ne || g_entries[g_dl_idx].is_dir) { fail(SRE_IO, "file"); return; }
   e = &g_entries[g_dl_idx];
   g_dl_total = e->size;
@@ -465,13 +527,36 @@ void src_dismiss(void) {
 }
 
 void src_list(const char *path) {
-  if (!g_init || !g_cfg || src_busy()) return;
-  snprintf(g_list_path, sizeof g_list_path, "%s", path ? path : "");
+  const cache_ent *c;
+  if (!g_init || !g_cfg) return;
+  path = path ? path : "";
+  c = cache_find(path);
+  if (c) {
+    /* shown at once from what was read before; a quiet refresh (best-effort: skipped if the worker is already busy with
+     * something else) checks whether the share still agrees, and updates the list if not */
+    LightLock_Lock(&g_lock);
+    g_ne = c->n;
+    if (c->n) memcpy(g_entries, c->entries, (size_t)c->n * sizeof *g_entries);
+    snprintf(g_cur_path, sizeof g_cur_path, "%s", path);
+    g_st.state = SRS_READY;
+    g_st.error = SRE_NONE;
+    touch();
+    LightLock_Unlock(&g_lock);
+    snprintf(g_list_path, sizeof g_list_path, "%s", path);
+    if (!src_busy()) { g_quiet_refresh = true; start(J_LIST); }
+    return;
+  }
+  if (src_busy()) return;
+  g_quiet_refresh = false;
+  snprintf(g_list_path, sizeof g_list_path, "%s", path);
   if (!start(J_LIST)) fail(SRE_IO, "thread");
 }
 
 void src_download(int idx, const char *dest_dir, const char *dest_name) {
-  if (!g_init || !g_cfg || src_busy() || idx < 0 || idx >= g_ne || g_entries[idx].is_dir) return;
+  if (!g_init || !g_cfg) return;
+  if (idx < 0 || idx >= g_ne || g_entries[idx].is_dir) { fail(SRE_IO, "the list changed: open the file again"); return; }
+  if (src_busy()) { fail(SRE_IO, "busy"); return; } /* should not happen (the confirm screen is only up when idle), but never silent */
+  alog("Sources: downloading \"%s\" (%llu bytes) to %s", g_entries[idx].name, (unsigned long long)g_entries[idx].size, dest_dir);
   g_dl_idx = idx;
   snprintf(g_dl_dir, sizeof g_dl_dir, "%s", dest_dir);
   snprintf(g_dl_name, sizeof g_dl_name, "%s", dest_name);
@@ -489,6 +574,7 @@ void src_shutdown(void) {
   if (!g_init) return;
   __atomic_store_n(&g_cancel, true, __ATOMIC_RELEASE);
   if (g_worker) { threadJoin(g_worker, UINT64_MAX); threadFree(g_worker); g_worker = NULL; }
+  cache_clear();
   free(g_entries);
   g_entries = NULL;
   g_init = false;

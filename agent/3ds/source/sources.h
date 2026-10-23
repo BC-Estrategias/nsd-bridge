@@ -34,6 +34,7 @@ void src_shutdown(void);
 bool src_configured(void);
 const char *src_link(void);
 bool src_set_link(const char *url); /* validates, saves in config/sources-url, forgets the current listing */
+void src_forget_link(void); /* removes config/sources-url: back to "no source set" */
 
 void src_list(const char *path); /* path relative to the share's root ("" = root): replaces the current listing */
 const char *src_cur_path(void);

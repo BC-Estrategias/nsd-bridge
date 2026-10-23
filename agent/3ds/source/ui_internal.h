@@ -48,7 +48,9 @@ void uitr_draw(const ui_model *m);   /* draws both screens */
 void uitr_set_message(const char *m);
 
 /* ---- Sources screen (ui_sources.c) ---- */
-void uisrc_open(void);
+void uisrc_open_manage(void); /* Settings: just the link */
+void uisrc_open_browse(void); /* Installer: the file picker */
+bool uisrc_is_browsing(void); /* which of the two is currently open (for where B/START should leave to) */
 ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *redraw, bool *leave);
 void uisrc_draw(const ui_model *m);
 const char *uisrc_dest_path(void);       /* the "/roms/gba" folder the destination browser is showing */
