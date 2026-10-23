@@ -320,11 +320,13 @@ static void job_list(void) {
   n = b.p ? dav_parse(b.p, b.n, es, ES_MAX) : 0;
   free(b.p);
   if (cancelled()) { free(es); free(out); if (!quiet) fail(SRE_CANCELLED, ""); return; }
-  ni = n < ES_MAX ? n : ES_MAX;
-  for (i = 0; i < ni; i++) {
-    out[i].is_dir = es[i].is_dir;
-    out[i].size = es[i].size;
-    snprintf(out[i].name, sizeof out[i].name, "%s", es[i].name);
+  n = n < ES_MAX ? n : ES_MAX;
+  for (ni = 0, i = 0; i < n; i++) {
+    if (es[i].name[0] == '.' || tr_skip_name(es[i].name)) continue; /* hidden (a leading dot) and macOS/Windows leftovers */
+    out[ni].is_dir = es[i].is_dir;
+    out[ni].size = es[i].size;
+    snprintf(out[ni].name, sizeof out[ni].name, "%s", es[i].name);
+    ni++;
   }
   free(es);
   /* folders first, then alphabetically (case-insensitive) */

@@ -219,6 +219,8 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
     }
     if (down & (KEY_DDOWN | KEY_CPAD_DOWN)) { if (dst.n) dst.sel = (dst.sel + 1) % dst.n; *redraw = true; }
     else if (down & (KEY_DUP | KEY_CPAD_UP)) { if (dst.n) dst.sel = (dst.sel + dst.n - 1) % dst.n; *redraw = true; }
+    else if (down & KEY_R) { dst.sel = dst.sel + 8 < dst.n ? dst.sel + 8 : dst.n ? dst.n - 1 : 0; *redraw = true; }
+    else if (down & KEY_L) { dst.sel = dst.sel > 8 ? dst.sel - 8 : 0; *redraw = true; }
     else if ((down & KEY_A) && dst.n) { dst_enter(); *redraw = true; }
     else if (down & KEY_X) { if (w) { ust = USRC_CONFIRM; *redraw = true; } }
     else if (down & KEY_Y) { if (w) { *redraw = true; return UI_SRC_NEWFOLDER; } }
@@ -253,6 +255,8 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
     }
     if (down & (KEY_DDOWN | KEY_CPAD_DOWN)) { if (n) sel = (sel + 1) % n; *redraw = true; }
     else if (down & (KEY_DUP | KEY_CPAD_UP)) { if (n) sel = (sel + n - 1) % n; *redraw = true; }
+    else if (down & KEY_R) { sel = sel + 8 < n ? sel + 8 : n ? n - 1 : 0; *redraw = true; }
+    else if (down & KEY_L) { sel = sel > 8 ? sel - 8 : 0; *redraw = true; }
     else if ((down & KEY_A) && n) { browse_activate(); *redraw = true; }
     else if (down & (KEY_B | KEY_START)) {
       if (!browse_path[0]) { *leave = true; }
