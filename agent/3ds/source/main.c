@@ -1085,7 +1085,7 @@ int main(int argc, char **argv) {
           case UI_SRC_LINK: {
             static char link[300];
             SwkbdState kb;
-            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 1, (int)sizeof link - 40);
+            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 2, (int)sizeof link - 40);
             swkbdSetHintText(&kb, "https://.../s/xxxxxxxx");
             swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
             swkbdSetFeatures(&kb, SWKBD_FIXED_WIDTH);
@@ -1105,7 +1105,7 @@ int main(int argc, char **argv) {
             static char name[64], full[432];
             SwkbdState kb;
             const char *base = uisrc_dest_path();
-            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 1, (int)sizeof name - 1);
+            swkbdInit(&kb, SWKBD_TYPE_NORMAL, 2, (int)sizeof name - 1);
             swkbdSetHintText(&kb, ui_pt() ? "nome da pasta" : "folder name");
             swkbdSetValidation(&kb, SWKBD_NOTEMPTY_NOTBLANK, SWKBD_FILTER_BACKSLASH, 0);
             swkbdSetFeatures(&kb, SWKBD_FIXED_WIDTH);
