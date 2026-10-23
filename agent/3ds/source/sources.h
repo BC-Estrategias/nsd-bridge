@@ -5,6 +5,7 @@
  * folder opened for writing on the console. Unlike Translations/Mods, this expects no catalog layout: it is a plain file
  * browser over WebDAV. Everything that touches the network or writes files runs on one worker thread. */
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -37,6 +38,7 @@ bool src_set_link(const char *url); /* validates, saves in config/sources-url, f
 void src_forget_link(void); /* removes config/sources-url: back to "no source set" */
 
 void src_list(const char *path); /* path relative to the share's root ("" = root): replaces the current listing */
+bool src_entry_url(int idx, char *out, size_t cap); /* the full, authenticated URL of src_at(idx) (a file); false if idx is a folder */
 const char *src_cur_path(void);
 int src_count(void);
 const src_entry *src_at(int i);

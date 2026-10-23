@@ -1068,6 +1068,9 @@ int main(int argc, char **argv) {
           case UI_INST_SD:
             if (!installer_start_file(ui_arg_str(), NULL, NULL)) alog("Install: busy, not started");
             break;
+          case UI_SRC_INSTALL:
+            if (!installer_start_url(ui_arg_str(), NULL, NULL)) alog("Sources: busy, the .cia was not sent to the installer");
+            break;
           case UI_TR_LINK: {
             /* the link of the translations share; the keyboard takes over the screen */
             static char link[300];

@@ -40,6 +40,7 @@ typedef enum {
   UI_SRC_NEWFOLDER, /* type the name of a new folder under uisrc_dest_path() */
   UI_SRC_RECV_ON,   /* the Sources screen opened: a SOURCE_LINK request from the browser is taken */
   UI_SRC_RECV_OFF,  /* the Sources screen closed */
+  UI_SRC_INSTALL,   /* a .cia was chosen in Sources: hand ui_arg_str() (its URL) to the installer; no copy is kept */
   UI_UPDATE,    /* check for / install an update */
   UI_EXIT,
   UI_PAIR_YES,  /* answer to a pairing request */

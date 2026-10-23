@@ -152,6 +152,22 @@ void src_forget_link(void) {
   load_config();
 }
 
+/* The full URL of src_at(idx) (a file of the current listing), with the share's token embedded as the Basic-auth user
+ * (https://TOKEN:@host/public.php/webdav/path) — for handing straight to the CIA installer, bypassing the generic
+ * download-to-a-folder flow: a .cia is installed and no copy of it is kept anywhere. */
+bool src_entry_url(int idx, char *out, size_t cap) {
+  char enc[700], rel[420];
+  const char *host;
+  if (!g_cfg || idx < 0 || idx >= g_ne || g_entries[idx].is_dir) return false;
+  host = strstr(g_base, "://");
+  if (!host) return false;
+  host += 3;
+  snprintf(rel, sizeof rel, "%s%s%s", g_cur_path, g_cur_path[0] ? "/" : "", g_entries[idx].name);
+  url_encode_path(rel, enc, sizeof enc);
+  snprintf(out, cap, "https://%s:@%s/public.php/webdav/%s", g_token, host, enc);
+  return true;
+}
+
 int src_count(void) { return g_ne; }
 const src_entry *src_at(int i) { return i >= 0 && i < g_ne ? &g_entries[i] : NULL; }
 const char *src_cur_path(void) { return g_cur_path; }

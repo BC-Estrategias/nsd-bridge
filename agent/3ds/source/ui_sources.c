@@ -149,15 +149,26 @@ static void dst_enter(void) {
 void uisrc_dest_refresh(const char *select) { dst_load(select); }
 const char *uisrc_dest_path(void) { return dst.path; } /* where main.c's "new folder" prompt creates the folder */
 
-/* Row `sel` of the source listing: a folder descends into it, a file moves on to picking a destination. */
-static void browse_activate(void) {
+static bool is_cia(const char *n) {
+  size_t l = strlen(n);
+  return l > 4 && !strcasecmp(n + l - 4, ".cia");
+}
+
+/* Row `sel` of the source listing: a folder descends into it; a .cia hands off to the installer (so it is installed and no
+ * copy is kept); any other file moves on to picking a destination folder. */
+static ui_action browse_activate(void) {
   const src_entry *e = src_at(sel);
-  if (!e) return;
+  if (!e) return UI_NONE;
   if (e->is_dir) {
     char next[400];
     snprintf(next, sizeof next, "%s%s%s", browse_path, browse_path[0] ? "/" : "", e->name);
     snprintf(browse_path, sizeof browse_path, "%s", next);
     src_list(browse_path);
+  } else if (is_cia(e->name)) {
+    char url[900];
+    if (!src_entry_url(sel, url, sizeof url)) return UI_NONE;
+    ui_set_arg_str(url);
+    return UI_SRC_INSTALL;
   } else {
     chosen_idx = sel;
     snprintf(chosen_name, sizeof chosen_name, "%s", e->name);
@@ -166,6 +177,7 @@ static void browse_activate(void) {
     dst_load(NULL);
     ust = USRC_DEST;
   }
+  return UI_NONE;
 }
 
 /* ------------------------------------------------------------------------------------------------ input */
@@ -257,7 +269,11 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
     else if (down & (KEY_DUP | KEY_CPAD_UP)) { if (n) sel = (sel + n - 1) % n; *redraw = true; }
     else if (down & KEY_R) { sel = sel + 8 < n ? sel + 8 : n ? n - 1 : 0; *redraw = true; }
     else if (down & KEY_L) { sel = sel > 8 ? sel - 8 : 0; *redraw = true; }
-    else if ((down & KEY_A) && n) { browse_activate(); *redraw = true; }
+    else if ((down & KEY_A) && n) {
+      ui_action a = browse_activate();
+      *redraw = true;
+      if (a != UI_NONE) return a;
+    }
     else if (down & (KEY_B | KEY_START)) {
       if (!browse_path[0]) { *leave = true; }
       else {
@@ -276,7 +292,7 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
       }
       if (r >= 0 && top + r < n) {
         *redraw = true;
-        if (top + r == sel) browse_activate();
+        if (top + r == sel) { ui_action a = browse_activate(); if (a != UI_NONE) return a; }
         else sel = top + r;
       }
     }
