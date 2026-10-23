@@ -119,8 +119,8 @@ int ui_drag_rows(u32 down, u32 held, const touchPosition *touch) {
 
 /* ---- the screens: main menu -> Pairing (pair, paired devices, web page) -> paired devices (B goes back one level) ---- */
 /* the main menu: START leaves the app, so there is no "Exit" row; the rarely used rows live under Settings */
-enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_MODS, IT_SOURCES, IT_INSTALLER, IT_COUNT };
-enum { SS_FOLDERS, SS_MODE, SS_PAIRING, SS_LOG, SS_COUNT };
+enum { IT_UPDATE, IT_SETTINGS, IT_TITLES, IT_TRANSL, IT_MODS, IT_INSTALLER, IT_COUNT };
+enum { SS_FOLDERS, SS_MODE, SS_PAIRING, SS_SOURCES, SS_LOG, SS_COUNT };
 enum { SP_PAIR, SP_DEVICES, SP_WEB, SP_COUNT };
 enum { SI_SD, SI_URL, SI_RECV, SI_QR, SI_PENDING, SI_SEEDS, SI_COUNT };
 
@@ -133,7 +133,6 @@ static const char *item_name(int i) {
     case IT_TITLES: return UI_T("Titles", "Títulos");
     case IT_TRANSL: return UI_T("Translations", "Traduções");
     case IT_MODS: return "Mods";
-    case IT_SOURCES: return UI_T("Sources", "Fontes");
     default: return UI_T("Installer", "Instalador");
   }
 }
@@ -143,6 +142,7 @@ static const char *settings_name(int i) {
     case SS_FOLDERS: return UI_T("Open folders", "Pastas liberadas");
     case SS_MODE: return UI_T("Mode", "Modo");
     case SS_PAIRING: return UI_T("Pairing", "Pareamento");
+    case SS_SOURCES: return UI_T("Download sources", "Fontes de download");
     default: return UI_T("Activity log", "Log de atividade");
   }
 }
@@ -178,7 +178,6 @@ static ui_action activate(const ui_model *m) {
       case IT_TITLES: uit_open(); go(SCR_TITLES); return UI_NONE;
       case IT_TRANSL: uitr_open(0); go(SCR_TRANSL); return UI_NONE;
       case IT_MODS: uitr_open(1); go(SCR_TRANSL); return UI_NONE;
-      case IT_SOURCES: uisrc_open(); go(SCR_SOURCES); return UI_SRC_RECV_ON;
       default: break;
     }
     return UI_NONE;
@@ -188,6 +187,7 @@ static ui_action activate(const ui_model *m) {
       case SS_FOLDERS: return UI_FOLDERS;
       case SS_MODE: return UI_MODE;
       case SS_PAIRING: go(SCR_MCP); return UI_NONE;
+      case SS_SOURCES: uisrc_open(); go(SCR_SOURCES); return UI_SRC_RECV_ON;
       default: g_log_off = 0; go(SCR_LOG); return UI_NONE;
     }
   }
@@ -236,7 +236,7 @@ ui_action ui_handle(u32 down, u32 held, const touchPosition *touch, const ui_mod
   if (g_screen == SCR_SOURCES) {
     bool leave = false;
     ui_action a = uisrc_handle(down, held, touch, redraw, &leave);
-    if (leave) { go(SCR_MAIN); *redraw = true; return UI_SRC_RECV_OFF; }
+    if (leave) { go(SCR_SETTINGS); *redraw = true; return UI_SRC_RECV_OFF; }
     return a;
   }
   if (g_screen == SCR_TITLES) {

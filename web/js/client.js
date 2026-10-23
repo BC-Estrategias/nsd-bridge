@@ -286,6 +286,12 @@
       await this.request(Command.INSTALL_URL, C.encodeTlv(fields));
     }
 
+    /** Sets the share the 3DS's Sources screen browses. Taken only while that screen is open on the console; applies
+     * at once (nothing is downloaded or run by this alone). */
+    async sourceLink(url) {
+      await this.request(Command.SOURCE_LINK, C.encodeTlv([[Tag.URL, C.str(url)]]));
+    }
+
     async stat(path) {
       const t = C.parseTlv((await this.request(Command.FS_STAT, C.encodeTlv([[Tag.PATH, C.str(path)]]))).payload);
       return { type: t.u8(Tag.TYPE) === 2 ? "dir" : "file", size: t.u64(Tag.SIZE) || 0, mtime: t.u64(Tag.MTIME) || null };

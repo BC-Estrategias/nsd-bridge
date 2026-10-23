@@ -174,7 +174,7 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
 
   if (!src_configured()) {
     if ((down & KEY_A) || ((down & KEY_TOUCH) && tap_in(touch, 50, 70, 320, 130))) return UI_SRC_LINK;
-    if ((down & KEY_B) || ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40)) { *leave = true; *redraw = true; }
+    if ((down & (KEY_B | KEY_START)) || ((down & KEY_TOUCH) && touch->py >= 20 && touch->py < 40)) { *leave = true; *redraw = true; }
     return UI_NONE;
   }
 
@@ -184,7 +184,7 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
       snprintf(full, sizeof full, "sdmc:%s", dst.path);
       src_download(chosen_idx, full, chosen_name);
       *redraw = true;
-    } else if (down & KEY_B) { ust = USRC_DEST; *redraw = true; }
+    } else if (down & (KEY_B | KEY_START)) { ust = USRC_DEST; *redraw = true; }
     return UI_NONE;
   }
 
@@ -204,7 +204,7 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
     else if ((down & KEY_A) && dst.n) { dst_enter(); *redraw = true; }
     else if (down & KEY_X) { if (w) { ust = USRC_CONFIRM; *redraw = true; } }
     else if (down & KEY_Y) { if (w) { *redraw = true; return UI_SRC_NEWFOLDER; } }
-    else if (down & KEY_B) {
+    else if (down & (KEY_B | KEY_START)) {
       if (strcmp(dst.path, "/") == 0) { ust = USRC_BROWSE; } else dst_up();
       *redraw = true;
     } else if (down & KEY_TOUCH) {
@@ -219,6 +219,7 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
 
   /* ---- USRC_BROWSE ---- */
   if (s.state == SRS_LISTING) {
+    if (down & (KEY_B | KEY_START)) { src_cancel(); *redraw = true; }
     *redraw = true;
     return UI_NONE;
   }
@@ -236,7 +237,7 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
     else if (down & (KEY_DUP | KEY_CPAD_UP)) { if (n) sel = (sel + n - 1) % n; *redraw = true; }
     else if (down & KEY_SELECT) return UI_SRC_LINK;
     else if ((down & KEY_A) && n) { browse_activate(); *redraw = true; }
-    else if (down & KEY_B) {
+    else if (down & (KEY_B | KEY_START)) {
       if (!browse_path[0]) { *leave = true; }
       else {
         char *slash = strrchr(browse_path, '/');
