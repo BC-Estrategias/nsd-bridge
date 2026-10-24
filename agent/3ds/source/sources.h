@@ -14,8 +14,13 @@ typedef struct {
   uint64_t size; /* files only */
 } src_entry;
 
-typedef enum { SRS_IDLE, SRS_LISTING, SRS_READY, SRS_DOWNLOADING, SRS_DONE, SRS_ERROR } src_state;
-typedef enum { SRE_NONE, SRE_NET, SRE_IO, SRE_SPACE, SRE_CANCELLED, SRE_EXISTS, SRE_SIZE } src_error;
+typedef struct {
+  char rel[280]; /* relative to the folder src_prepare_folder() was given: the same sub-path is recreated under the destination */
+  uint64_t size;
+} src_batch_ent;
+
+typedef enum { SRS_IDLE, SRS_LISTING, SRS_PREPARING, SRS_READY, SRS_DOWNLOADING, SRS_DONE, SRS_ERROR } src_state;
+typedef enum { SRE_NONE, SRE_NET, SRE_IO, SRE_SPACE, SRE_CANCELLED, SRE_EXISTS, SRE_SIZE, SRE_NOFILES, SRE_TOOBIG, SRE_BADPATH } src_error;
 
 typedef struct {
   src_state state;
@@ -24,8 +29,9 @@ typedef struct {
   int net_code;
   long http_code;
   char detail[160];
-  char name[200]; /* the file being downloaded */
+  char name[200]; /* the file being downloaded (a single download), or the folder being gathered/sent (a batch) */
   uint64_t bytes_done, bytes_total;
+  unsigned files_done, files_total; /* a batch download only; both 0 for a single file */
   unsigned bps, eta_s;
 } src_status;
 
@@ -51,5 +57,17 @@ bool src_busy(void);
 /* Downloads src_at(idx) (must be a file of the folder src_list() last listed) to dest_dir/dest_name, both plain "sdmc:" paths
  * the caller has already checked are open for writing. Refuses to overwrite an existing file. */
 void src_download(int idx, const char *dest_dir, const char *dest_name);
+
+/* A whole folder: src_at(idx) must be a folder of the listing src_list() last showed. Recursively reads it (state goes to
+ * SRS_PREPARING, then SRS_READY with the count/size in src_get(), or SRS_ERROR); hidden and junk files are skipped the same
+ * way a single folder listing skips them. Limits: 20000 files, 1.5 GiB. */
+void src_prepare_folder(int idx);
+int src_batch_count(void);
+const src_batch_ent *src_batch_at(int i);
+uint64_t src_batch_bytes(void);
+/* Downloads everything src_prepare_folder() gathered into dest_dir (a plain "sdmc:" path already checked as open for
+ * writing), recreating the same sub-folders. Skips a file that is already there with the same size; refuses to overwrite one
+ * with a different size (SRE_EXISTS, named in detail) rather than guess which copy is right. */
+void src_download_batch(const char *dest_dir);
 #endif
 #endif

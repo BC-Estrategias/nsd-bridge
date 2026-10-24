@@ -494,8 +494,224 @@ static void job_download(void) {
   set_state(SRS_DONE);
 }
 
+/* ------------------------------------------------------------------------------------------------ a whole folder */
+#define BATCH_MAX 4000u
+#define BATCH_MAX_BYTES (1536ull * 1024ull * 1024ull)
+static src_batch_ent *g_batch;
+static int g_batch_n;
+static uint64_t g_batch_bytes;
+static char g_batch_base[400]; /* the folder, relative to the share's root, src_prepare_folder() was asked to read */
+static char g_batch_dest[330]; /* where src_download_batch() was asked to put it (a plain "sdmc:" path) */
+
+/* A dotted name anywhere in the path (not just the file itself): a hidden sub-folder is skipped along with everything in it. */
+static bool rel_has_hidden_segment(const char *rel) {
+  const char *s = rel;
+  for (;;) {
+    const char *e = strchr(s, '/');
+    char seg[200];
+    size_t l = e ? (size_t)(e - s) : strlen(s);
+    if (l == 0 || l >= sizeof seg) return true;
+    memcpy(seg, s, l);
+    seg[l] = '\0';
+    if (seg[0] == '.' || tr_skip_name(seg)) return true;
+    if (!e) return false;
+    s = e + 1;
+  }
+}
+
+typedef struct { const char *prefix; size_t plen; bool toobig, badpath; char bad[200]; } bcollect;
+static int on_batch_entry(const dav_entry *e, void *ud) {
+  bcollect *c = ud;
+  const char *p, *rel;
+  if (e->is_dir) return 0;
+  p = strstr(e->href, c->prefix);
+  if (!p) return 0;
+  rel = p + c->plen;
+  if (!rel[0] || rel_has_hidden_segment(rel)) return 0;
+  if (!tr_path_ok(rel)) { c->badpath = true; snprintf(c->bad, sizeof c->bad, "%.110s", rel); return 1; }
+  if ((unsigned)g_batch_n >= BATCH_MAX || g_batch_bytes + e->size > BATCH_MAX_BYTES) { c->toobig = true; return 1; }
+  snprintf(g_batch[g_batch_n].rel, sizeof g_batch[g_batch_n].rel, "%s", rel);
+  g_batch[g_batch_n].size = e->size;
+  g_batch_bytes += e->size;
+  g_batch_n++;
+  return 0;
+}
+
+/* Lists a whole folder: one request with Depth: infinity when the share allows it, folder by folder otherwise (mirrors
+ * translations.c's collect_files, which solved the same problem for a pack's arquivos/). */
+static void job_prepare_folder(void) {
+  static char dir[420], prefix[430];
+  buf b = {0, 0, 0, 8u * 1024u * 1024u, false};
+  bcollect c;
+  set_state(SRS_PREPARING);
+  g_batch_n = 0;
+  g_batch_bytes = 0;
+  memset(&c, 0, sizeof c);
+  snprintf(prefix, sizeof prefix, "%s/", g_batch_base);
+  c.prefix = prefix;
+  c.plen = strlen(prefix);
+  snprintf(dir, sizeof dir, "%s/", g_batch_base);
+  if (http("PROPFIND", dir, "infinity", PROPFIND_BODY, sink_buf, &b) && b.p) {
+    dav_parse_cb(b.p, b.n, on_batch_entry, &c);
+    free(b.p);
+  } else {
+    free(b.p);
+    if (cancelled()) { fail(SRE_CANCELLED, ""); return; }
+    /* the share refused Depth: infinity (or the answer was too big): walk the folders one at a time */
+    {
+      static char stack[64][380];
+      int sp = 0, i;
+      g_batch_n = 0;
+      g_batch_bytes = 0;
+      memset(&c, 0, sizeof c);
+      c.prefix = prefix;
+      c.plen = strlen(prefix);
+      snprintf(stack[sp++], sizeof stack[0], "%s", g_batch_base);
+      while (sp > 0 && !cancelled()) {
+        static char cur[380], p2[420];
+        dav_entry *es;
+        buf b2 = {0, 0, 0, 2u * 1024u * 1024u, false};
+        int nn;
+        snprintf(cur, sizeof cur, "%s", stack[--sp]);
+        es = malloc(ES_MAX * sizeof *es);
+        if (!es) { fail(SRE_IO, "memory"); return; }
+        snprintf(p2, sizeof p2, "%s/", cur);
+        if (!http("PROPFIND", p2, "1", PROPFIND_BODY, sink_buf, &b2)) { free(b2.p); free(es); net_fail("listing"); return; }
+        nn = b2.p ? dav_parse(b2.p, b2.n, es, ES_MAX) : 0;
+        free(b2.p);
+        for (i = 0; i < nn; i++) {
+          if (es[i].is_dir) {
+            if (es[i].name[0] != '.' && sp < 64 && strlen(cur) + strlen(es[i].name) + 2 < sizeof stack[0])
+              snprintf(stack[sp++], sizeof stack[0], "%s/%s", cur, es[i].name);
+          } else if (on_batch_entry(&es[i], &c)) {
+            free(es);
+            sp = 0;
+            break;
+          }
+        }
+        free(es);
+      }
+    }
+  }
+  if (cancelled()) { fail(SRE_CANCELLED, ""); return; }
+  if (c.badpath) { fail(SRE_BADPATH, c.bad); return; }
+  if (c.toobig) { fail(SRE_TOOBIG, ""); return; }
+  if (g_batch_n == 0) { fail(SRE_NOFILES, g_batch_base); return; }
+  alog("Sources: %d files, %llu KiB under \"%s\"", g_batch_n, (unsigned long long)(g_batch_bytes >> 10), g_batch_base);
+  LightLock_Lock(&g_lock);
+  g_st.files_total = (unsigned)g_batch_n;
+  g_st.bytes_total = g_batch_bytes;
+  touch();
+  LightLock_Unlock(&g_lock);
+  set_state(SRS_READY);
+}
+
+static void mkdir_p_batch(const char *base, const char *rel_dir) {
+  static char path[560];
+  const char *s = rel_dir;
+  if (!rel_dir[0]) return;
+  for (;;) {
+    const char *e = strchr(s, '/');
+    size_t len = e ? (size_t)(e - rel_dir) : strlen(rel_dir);
+    snprintf(path, sizeof path, "%s/%.*s", base, (int)len, rel_dir);
+    mkdir(path, 0777);
+    if (!e) break;
+    s = e + 1;
+  }
+}
+
+static char g_batch_stage[330];
+typedef struct { FILE *f; uint64_t got; bool opened; char *wbuf; } bsink;
+static size_t sink_file_batch(char *ptr, size_t a, size_t b, void *ud) {
+  bsink *x = ud;
+  size_t n = a * b;
+  if (cancelled() || g_resp_status >= 300) return 0;
+  if (!x->opened) {
+    x->f = fopen(g_batch_stage, "wb");
+    if (!x->f) return 0;
+    setvbuf(x->f, x->wbuf, _IOFBF, IO_SIZE);
+    x->opened = true;
+  }
+  if (fwrite(ptr, 1, n, x->f) != n) return 0;
+  x->got += n;
+  return n;
+}
+
+/* Each file of the batch downloads whole (no mid-file resume); a file that already sits at the destination with the right
+ * size is skipped, which is what lets re-running this after an interruption pick up where it left off. */
+static void job_download_batch(void) {
+  unsigned i, done = 0;
+  uint64_t bytes_before = 0;
+  set_state(SRS_DOWNLOADING);
+  mkdir("sdmc:/3ds", 0777);
+  mkdir("sdmc:/3ds/nintendo-dev-agent", 0777);
+  mkdir(STAGE_DIR, 0777);
+  snprintf(g_batch_stage, sizeof g_batch_stage, STAGE_DIR "/batch.part");
+  LightLock_Lock(&g_lock);
+  g_st.files_done = 0;
+  g_st.files_total = (unsigned)g_batch_n;
+  g_st.bytes_done = 0;
+  g_st.bytes_total = g_batch_bytes;
+  g_st.bps = g_st.eta_s = 0;
+  snprintf(g_st.name, sizeof g_st.name, "%s", g_batch_base);
+  touch();
+  LightLock_Unlock(&g_lock);
+  for (i = 0; i < (unsigned)g_batch_n && !cancelled(); i++) {
+    static char dst[560], url[460], dirrel[300];
+    struct stat sb;
+    const src_batch_ent *be = &g_batch[i];
+    const char *slash;
+    FS_ArchiveResource r;
+    bsink bs;
+    bool ok;
+    snprintf(dst, sizeof dst, "%s/%s", g_batch_dest, be->rel);
+    if (stat(dst, &sb) == 0) {
+      if ((uint64_t)sb.st_size == be->size) {
+        done++;
+        bytes_before += be->size;
+        LightLock_Lock(&g_lock);
+        g_st.files_done = done;
+        g_st.bytes_done = bytes_before;
+        touch();
+        LightLock_Unlock(&g_lock);
+        continue;
+      }
+      fail(SRE_EXISTS, be->rel);
+      return;
+    }
+    slash = strrchr(be->rel, '/');
+    if (slash) { snprintf(dirrel, sizeof dirrel, "%.*s", (int)(slash - be->rel), be->rel); mkdir_p_batch(g_batch_dest, dirrel); }
+    if (R_SUCCEEDED(FSUSER_GetSdmcArchiveResource(&r)) && (uint64_t)r.freeClusters * r.clusterSize < be->size + SPACE_MARGIN) { fail(SRE_SPACE, be->rel); return; }
+    memset(&bs, 0, sizeof bs);
+    bs.wbuf = malloc(IO_SIZE);
+    if (!bs.wbuf) { fail(SRE_IO, "memory"); return; }
+    snprintf(url, sizeof url, "%s/%s", g_batch_base, be->rel);
+    ok = http("GET", url, NULL, NULL, sink_file_batch, &bs);
+    if (bs.f) fclose(bs.f);
+    free(bs.wbuf);
+    if (!ok) {
+      remove(g_batch_stage);
+      if (cancelled()) fail(SRE_CANCELLED, "");
+      else net_fail(be->rel);
+      return;
+    }
+    if (stat(g_batch_stage, &sb) != 0 || (be->size && (uint64_t)sb.st_size != be->size)) { remove(g_batch_stage); fail(SRE_SIZE, be->rel); return; }
+    if (rename(g_batch_stage, dst) != 0) { remove(g_batch_stage); fail(SRE_IO, be->rel); return; }
+    done++;
+    bytes_before += be->size;
+    LightLock_Lock(&g_lock);
+    g_st.files_done = done;
+    g_st.bytes_done = bytes_before;
+    touch();
+    LightLock_Unlock(&g_lock);
+  }
+  if (cancelled()) { fail(SRE_CANCELLED, ""); return; }
+  alog("Sources: \"%s\" downloaded (%u files, %llu KiB) to %s", g_batch_base, done, (unsigned long long)(bytes_before >> 10), g_batch_dest);
+  set_state(SRS_DONE);
+}
+
 /* ------------------------------------------------------------------------------------------------ the worker */
-enum { J_LIST, J_DOWNLOAD };
+enum { J_LIST, J_DOWNLOAD, J_PREPARE_FOLDER, J_DOWNLOAD_BATCH };
 static int g_job;
 
 static void run(void *arg) {
@@ -505,7 +721,9 @@ static void run(void *arg) {
   g_mh = curl_multi_init();
   if (!g_c || !g_mh) { fail(SRE_IO, "memory"); goto cleanup; }
   if (g_job == J_LIST) job_list();
-  else job_download();
+  else if (g_job == J_DOWNLOAD) job_download();
+  else if (g_job == J_PREPARE_FOLDER) job_prepare_folder();
+  else job_download_batch();
 cleanup:
   if (g_c) curl_easy_cleanup(g_c);
   g_c = NULL;
@@ -581,11 +799,28 @@ void src_download(int idx, const char *dest_dir, const char *dest_name) {
   if (!start(J_DOWNLOAD)) fail(SRE_IO, "thread");
 }
 
+void src_prepare_folder(int idx) {
+  if (!g_init || !g_cfg || src_busy() || idx < 0 || idx >= g_ne || !g_entries[idx].is_dir) return;
+  snprintf(g_batch_base, sizeof g_batch_base, "%s%s%s", g_cur_path, g_cur_path[0] ? "/" : "", g_entries[idx].name);
+  if (!start(J_PREPARE_FOLDER)) fail(SRE_IO, "thread");
+}
+int src_batch_count(void) { return g_batch_n; }
+const src_batch_ent *src_batch_at(int i) { return i >= 0 && i < g_batch_n ? &g_batch[i] : NULL; }
+uint64_t src_batch_bytes(void) { return g_batch_bytes; }
+void src_download_batch(const char *dest_dir) {
+  if (!g_init || !g_cfg) return;
+  if (g_batch_n <= 0) { fail(SRE_NOFILES, g_batch_base); return; }
+  if (src_busy()) { fail(SRE_IO, "busy"); return; }
+  snprintf(g_batch_dest, sizeof g_batch_dest, "%s", dest_dir);
+  if (!start(J_DOWNLOAD_BATCH)) fail(SRE_IO, "thread");
+}
+
 void src_init(void) {
   if (g_init) return;
   LightLock_Init(&g_lock);
   g_entries = calloc(ES_MAX, sizeof *g_entries);
-  g_init = g_entries != NULL;
+  g_batch = calloc(BATCH_MAX, sizeof *g_batch);
+  g_init = g_entries != NULL && g_batch != NULL;
   load_config();
 }
 void src_shutdown(void) {
@@ -595,6 +830,8 @@ void src_shutdown(void) {
   cache_clear();
   free(g_entries);
   g_entries = NULL;
+  free(g_batch);
+  g_batch = NULL;
   g_init = false;
 }
 #endif

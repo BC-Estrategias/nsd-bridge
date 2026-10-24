@@ -16,7 +16,7 @@
 #include "sources.h"
 #include "ui_internal.h"
 
-enum { USRC_BROWSE, USRC_DEST, USRC_CONFIRM };
+enum { USRC_BROWSE, USRC_BATCH_WAIT, USRC_DEST, USRC_CONFIRM };
 enum { UMODE_MANAGE, UMODE_BROWSE }; /* MANAGE (Settings): just the link. BROWSE (Installer): the file picker below. */
 #define DST_MAX 256
 
@@ -28,6 +28,7 @@ static char link_msg[120];
 static int chosen_idx;
 static char chosen_name[200];
 static uint64_t chosen_size;
+static bool batch_mode; /* the confirm/download ahead is for a whole folder (src_prepare_folder), not one file */
 
 static struct {
   char path[400]; /* "/roms/gba", no "sdmc:" */
@@ -82,6 +83,7 @@ void uisrc_open_browse(void) {
   sel = top = 0;
   browse_path[0] = '\0';
   link_msg[0] = '\0';
+  batch_mode = false;
   if (src_configured()) src_list("");
 }
 
@@ -170,6 +172,7 @@ static ui_action browse_activate(void) {
     ui_set_arg_str(url);
     return UI_SRC_INSTALL;
   } else {
+    batch_mode = false;
     chosen_idx = sel;
     snprintf(chosen_name, sizeof chosen_name, "%s", e->name);
     chosen_size = e->size;
@@ -178,6 +181,16 @@ static ui_action browse_activate(void) {
     ust = USRC_DEST;
   }
   return UI_NONE;
+}
+
+/* X on a folder: read it whole (async) and, once ready, go straight to the destination picker for the batch. */
+static void batch_activate(void) {
+  const src_entry *e = src_at(sel);
+  if (!e || !e->is_dir) return;
+  batch_mode = true;
+  snprintf(chosen_name, sizeof chosen_name, "%s", e->name);
+  src_prepare_folder(sel);
+  ust = USRC_BATCH_WAIT;
 }
 
 /* ------------------------------------------------------------------------------------------------ input */
@@ -208,11 +221,22 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
     return UI_NONE;
   }
 
+  if (ust == USRC_BATCH_WAIT) {
+    if (s.state == SRS_READY) {
+      snprintf(dst.path, sizeof dst.path, "/");
+      dst_load(NULL);
+      ust = USRC_DEST;
+    } else if (down & (KEY_B | KEY_START)) { src_cancel(); }
+    *redraw = true;
+    return UI_NONE;
+  }
+
   if (ust == USRC_CONFIRM) {
     if (down & KEY_A) {
       char full[400];
       snprintf(full, sizeof full, "sdmc:%s", dst.path);
-      src_download(chosen_idx, full, chosen_name);
+      if (batch_mode) src_download_batch(full);
+      else src_download(chosen_idx, full, chosen_name);
       *redraw = true;
     } else if (down & (KEY_B | KEY_START)) { ust = USRC_DEST; *redraw = true; }
     return UI_NONE;
@@ -274,6 +298,7 @@ ui_action uisrc_handle(u32 down, u32 held, const touchPosition *touch, bool *red
       *redraw = true;
       if (a != UI_NONE) return a;
     }
+    else if ((down & KEY_X) && n) { batch_activate(); *redraw = true; }
     else if (down & (KEY_B | KEY_START)) {
       if (!browse_path[0]) { *leave = true; }
       else {
@@ -333,27 +358,33 @@ void uisrc_draw(const ui_model *m) {
       float frac = s.bytes_total ? (float)((double)s.bytes_done / (double)s.bytes_total) : 0.0f;
       char d[24];
       if (frac > 1.0f) frac = 1.0f;
-      ui_text(200, 80, 0.5f, COL_WHITE, UI_CENTER, "%.40s", s.name);
+      ui_text(200, 80, 0.5f, COL_WHITE, UI_CENTER, "%.40s%s", s.name, batch_mode ? "/" : "");
       ui_rect(30, 110, 340, 14, COL_BAR);
       ui_rect(30, 110, 340.0f * frac, 14, COL_GREEN);
       fmt_size(d, sizeof d, s.bytes_done);
       fmt_size(sz, sizeof sz, s.bytes_total);
-      ui_text(200, 130, 0.42f, COL_WHITE, UI_CENTER, "%u%%   %s / %s   %.2f MiB/s", (unsigned)(frac * 100.0f), d, sz, (double)s.bps / 1048576.0);
-      if (s.eta_s > 0) ui_text(200, 150, 0.42f, COL_CYAN, UI_CENTER, "%s ~%u:%02u", UI_T("Time left", "Tempo restante"), s.eta_s / 60, s.eta_s % 60);
+      ui_text(200, 130, 0.42f, COL_WHITE, UI_CENTER, "%u%%   %s / %s", (unsigned)(frac * 100.0f), d, sz);
+      if (batch_mode) ui_text(200, 148, 0.4f, COL_CYAN, UI_CENTER, "%u / %u %s", s.files_done, s.files_total, UI_T("files", "arquivos"));
+      if (s.eta_s > 0) ui_text(200, batch_mode ? 166 : 150, 0.42f, COL_CYAN, UI_CENTER, "%s ~%u:%02u", UI_T("Time left", "Tempo restante"), s.eta_s / 60, s.eta_s % 60);
     } else if (s.state == SRS_DONE) {
       ui_text(200, 120, 0.7f, COL_GREEN, UI_CENTER, "%s", UI_T("Downloaded", "Baixado"));
-      ui_text(200, 150, 0.42f, COL_WHITE, UI_CENTER, "%.40s", s.name);
+      ui_text(200, 150, 0.42f, COL_WHITE, UI_CENTER, "%.40s%s", s.name, batch_mode ? "/" : "");
+      if (batch_mode) ui_text(200, 172, 0.4f, COL_DIM, UI_CENTER, "%u %s", s.files_done, UI_T("files", "arquivos"));
     } else {
       const char *t;
       switch (s.error) {
-        case SRE_EXISTS: t = UI_T("A file with this name is already there.", "Já existe um arquivo com este nome."); break;
+        case SRE_EXISTS: t = UI_T("A file with this name is already there (different size).", "Já existe um arquivo com este nome (tamanho diferente)."); break;
         case SRE_SPACE: t = UI_T("Not enough space on the SD card.", "Sem espaço suficiente no cartão SD."); break;
         case SRE_SIZE: t = UI_T("Wrong size: the download did not finish right.", "Tamanho errado: o download não terminou certo."); break;
         case SRE_CANCELLED: t = UI_T("Cancelled.", "Cancelado."); break;
         case SRE_NET: t = s.http_code >= 500 ? UI_T("Server is down.", "Servidor fora do ar.") : UI_T("Could not reach the share.", "Não conseguiu acessar o link."); break;
+        case SRE_NOFILES: t = UI_T("This folder has no files.", "Esta pasta não tem arquivos."); break;
+        case SRE_TOOBIG: t = UI_T("Too many files or too big (limit 20000 / 1.5 GiB).", "Arquivos demais ou grande demais (limite 20000 / 1,5 GiB)."); break;
+        case SRE_BADPATH: t = UI_T("Refused an unsafe path in the folder.", "Recusou um caminho inseguro na pasta."); break;
         default: t = UI_T("Could not write the file.", "Não consegui gravar o arquivo."); break;
       }
       ui_text(200, 130, 0.45f, COL_RED, UI_CENTER, "%s", t);
+      if (s.detail[0]) ui_text(200, 152, 0.36f, COL_DIM, UI_CENTER, "%.60s", s.detail);
     }
     ui_scene_bottom(COL_BOT_BG);
     ui_bottom_chrome(UI_T("Sources", "Fontes"),
@@ -372,16 +403,31 @@ void uisrc_draw(const ui_model *m) {
     return;
   }
 
+  if (ust == USRC_BATCH_WAIT) {
+    ui_text(200, 100, 0.55f, COL_YELLOW, UI_CENTER, "%s", UI_T("Reading the whole folder...", "Lendo a pasta inteira..."));
+    ui_text(200, 126, 0.42f, COL_DIM, UI_CENTER, "%.40s", chosen_name);
+    ui_scene_bottom(COL_BOT_BG);
+    ui_bottom_chrome(UI_T("Sources", "Fontes"), UI_T("Please wait", "Aguarde"), UI_T("B: Cancel", "B: Cancelar"));
+    return;
+  }
+
   if (ust == USRC_CONFIRM) {
     char full[432];
     snprintf(full, sizeof full, "%s/%s", dst.path, chosen_name);
-    ui_text(12, 40, 0.5f, COL_WHITE, 0, "%.40s", chosen_name);
-    fmt_size(sz, sizeof sz, chosen_size);
-    ui_text(12, 64, 0.42f, COL_DIM, 0, "%s", sz);
+    if (batch_mode) {
+      ui_text(12, 40, 0.5f, COL_WHITE, 0, "%.38s/", chosen_name);
+      fmt_size(sz, sizeof sz, s.bytes_total);
+      ui_text(12, 64, 0.42f, COL_DIM, 0, "%u %s, %s", s.files_total, UI_T("files", "arquivos"), sz);
+    } else {
+      ui_text(12, 40, 0.5f, COL_WHITE, 0, "%.40s", chosen_name);
+      fmt_size(sz, sizeof sz, chosen_size);
+      ui_text(12, 64, 0.42f, COL_DIM, 0, "%s", sz);
+    }
     ui_text(12, 86, 0.4f, COL_WHITE, 0, "%s", UI_T("Download to:", "Baixar para:"));
     ui_text(12, 104, 0.4f, COL_CYAN, 0, "%.60s", full);
     ui_scene_bottom(COL_BOT_BG);
-    ui_bottom_chrome(UI_T("Sources", "Fontes"), UI_T("Download this file?", "Baixar este arquivo?"), UI_T("A: Yes   B: Cancel", "A: Sim   B: Cancelar"));
+    ui_bottom_chrome(UI_T("Sources", "Fontes"), batch_mode ? UI_T("Download this folder?", "Baixar esta pasta?") : UI_T("Download this file?", "Baixar este arquivo?"),
+                      UI_T("A: Yes   B: Cancel", "A: Sim   B: Cancelar"));
     button(10, 145, UI_RGB(0x4c, 0xaf, 0x50), UI_T("A: Download", "A: Baixar"));
     button(165, 145, UI_RGB(0x42, 0x7a, 0xb8), UI_T("B: Cancel", "B: Cancelar"));
     return;
@@ -390,8 +436,9 @@ void uisrc_draw(const ui_model *m) {
   if (ust == USRC_DEST) {
     bool w = nsd_write_allowed(dst.path);
     char title[420];
-    ui_text(12, 40, 0.5f, COL_WHITE, 0, "%.40s", chosen_name);
-    ui_text(12, 64, 0.4f, COL_DIM, 0, "%s", UI_T("Choose a folder to download it into.", "Escolha uma pasta para baixar nele."));
+    ui_text(12, 40, 0.5f, COL_WHITE, 0, "%.40s%s", chosen_name, batch_mode ? "/" : "");
+    ui_text(12, 64, 0.4f, COL_DIM, 0, "%s", batch_mode ? UI_T("Choose a folder to download it into (same sub-folders).", "Escolha uma pasta para baixar nela (mesmas subpastas).")
+                                                         : UI_T("Choose a folder to download it into.", "Escolha uma pasta para baixar nele."));
     ui_scene_bottom(COL_BOT_BG);
     snprintf(title, sizeof title, "< %s", dst.path);
     ui_bottom_chrome(w ? UI_T("Writable", "Pode escrever") : UI_T("Read-only", "Só leitura"), title,
@@ -421,7 +468,7 @@ void uisrc_draw(const ui_model *m) {
     char title[420];
     ui_scene_bottom(COL_BOT_BG);
     snprintf(title, sizeof title, "< /%s", browse_path);
-    ui_bottom_chrome(UI_T("Sources", "Fontes"), title, UI_T("A: Open", "A: Abrir"));
+    ui_bottom_chrome(UI_T("Sources", "Fontes"), title, UI_T("A: Open   X: Download whole folder", "A: Abrir   X: Baixar pasta inteira"));
     if (n == 0) ui_text(160, 100, 0.5f, COL_DIM, UI_CENTER, "%s", UI_T("Nothing here.", "Nada aqui."));
     for (i = top; i < n && i < top + UI_LIST_ROWS; i++) {
       const src_entry *e = src_at(i);
