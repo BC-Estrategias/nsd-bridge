@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.2.0 — Sources: browse and download from your own Nextcloud, a .cia installs straight away
+- **A new screen, Sources, browses any folder on a Nextcloud/ownCloud share you point it at** and downloads what you choose to a
+  folder already opened for writing — unlike Translations/Mods there is no catalog to follow, it is a plain file browser. The
+  link lives in **Settings > Download sources** (type it, or paste it on the web page while that screen is open — see below);
+  browsing and downloading live in **Installer > Download from a source**, so a console with no source set still shows a clear
+  "set it in Settings" message there instead of an empty browser.
+  - **A file** downloads with resume (closing the app, or the connection dropping, keeps what arrived; the same file continues
+    from there) and refuses to overwrite one already at the destination.
+  - **A whole folder** (X on it) reads the full tree first (one request with `Depth: infinity` when the share allows it, folder
+    by folder otherwise; limit 20 000 files / 1.5 GiB) and recreates the same folders under the destination you pick; a file
+    already there with the right size is skipped, so re-running an interrupted folder download continues where it left off.
+  - **A `.cia`** is not downloaded as a file at all: picking one hands it straight to the installer (the same confirmation,
+    checks and progress screen as any other install), and nothing is kept on the card afterward.
+  - Folders you have already opened this session show at once on revisiting (a quiet background check updates them if the
+    share changed); hidden files and macOS/Windows leftovers (`._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`) are left out of
+    every listing; L/R jump 8 rows, like the other file lists in the app.
+  - The destination picker can create a new folder (Y) in any folder already opened for writing.
+- **The web page can set the Sources link** (new protocol command `SOURCE_LINK`) — paste it there instead of typing it on the
+  3DS keyboard. The console only takes it while the Sources screen is open, and applies it at once with no further
+  confirmation: unlike installing a CIA, setting this link alone downloads or runs nothing by itself.
+- **Fixed: the installer's keyboard prompts (the Sources link, a new folder's name) had only one button, OK, with no way to
+  cancel.** They now have Cancel too, like every other keyboard in the app.
+
 ## 2.1.0 — packs as one zip, honest progress, DSiWare icons
 - **A pack may be one `pacote.zip`.** Put it in the version's folder next to `pacote.json` (paths inside it are relative to `/luma/titles/<ID>/`; a leading `arquivos/` is accepted). The console downloads that one file with a progress bar, continues it after an interruption (the card keeps the part; the share's ETag says it is still the same file), reads its index for the confirmation screen (exact file count, size, and for mods how many files are replaced) and extracts it, checking the size and CRC-32 of every file. If the extraction stops, the zip stays on the card, so installing again downloads nothing. Without a `pacote.zip` the pack still installs file by file from `arquivos/`. A zip is refused when it has a path outside the title's folder, encryption, a method other than stored / deflate, zip64, a repeated name, or more than 20 000 files / 1.5 GiB. Measured on a real console: the 17 379-file Radiant Historia pack went from 17 000 requests to one 4.6 MiB download and 6 seconds of reading and inflating.
 - **What really takes the time: creating folders.** The same measurement showed that on this console **creating a folder takes about 6 seconds** (the 1 423 folders of that pack took 2 h 27 min of the 2 h 50 min it needed), while a file costs about 80 ms and removing one a few milliseconds. So: the confirmation screen warns when an install has to create many folders ("N new folders to create: about X min": it counts the folders missing on the card and times one real creation), the progress shows folders as well as files and its time left counts both apart, the folder is only asked for when the list moves to another one, and **uninstalling a translation keeps its (empty) folders** so installing it again, or an update, does not build the tree again (a small `.nsd-empty` file in `/luma/titles/<ID>/` stops the empty folders from being shown as a hand-made patch). Mods still remove their folders.

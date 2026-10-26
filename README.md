@@ -23,6 +23,8 @@ Or grab the `.cia` / `.3dsx` straight from the [latest release](https://github.c
 
 **Titles, Translations and Mods (3DS, 2.0):** *Titles* lists what is installed (launch, delete, pending titles), like FBI's list. *Translations* and *Mods* install Luma3DS LayeredFS patches published in a Nextcloud folder, with marks for what is installed, updates, uninstall and (for mods) a backup of what they replace. See [`docs/translations.md`](docs/translations.md).
 
+**Sources (3DS, 2.2):** browse any folder on your own Nextcloud/ownCloud share and download a file, a whole folder, or install a `.cia` straight away — no catalog needed. The link is set in Settings (on the console, or pasted on the web page); browsing is under Installer > Download from a source.
+
 **DSi** — requires [TWiLight Menu++](https://github.com/DS-Homebrew/TWiLightMenu) installed on the SD card. Grab `nsd-bridge-dsi-vX.Y.Z.nds` from the [latest release](https://github.com/BC-Estrategias/nsd-bridge/releases/latest), copy it anywhere TWiLight Menu++'s file browser reaches (its own `/nsd-bridge` folder, once created by a first run, works), and launch it from there. No QR install for DS homebrew; this one manual copy is the only one you'll ever need — every later update can be pushed straight to the console over Wi-Fi: run `ndev update <console-ip>` (it downloads the newest DSi build, checks it, and sends it; see below), and the web page shows a banner when a new version exists.
 
 ## Three ways in, one console app

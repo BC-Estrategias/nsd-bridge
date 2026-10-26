@@ -23,6 +23,8 @@ Ou baixe o `.cia` / `.3dsx` direto da [última versão](https://github.com/BC-Es
 
 **Títulos, Traduções e Mods (3DS, 2.0):** *Títulos* lista o que está instalado (abrir, apagar, títulos pendentes), como a lista do FBI. *Traduções* e *Mods* instalam patches LayeredFS do Luma3DS publicados numa pasta do Nextcloud, com marcas do que está instalado, atualizações, desinstalação e (nos mods) backup do que eles substituem. Veja [`docs/translations.md`](docs/translations.md).
 
+**Fontes (3DS, 2.2):** navegue em qualquer pasta do seu Nextcloud/ownCloud e baixe um arquivo, uma pasta inteira, ou instale um `.cia` na hora — sem precisar de catálogo. O link é definido em Configurações (no console, ou colado na página web); a navegação fica em Instalador > Baixar de uma fonte.
+
 **DSi** — precisa do [TWiLight Menu++](https://github.com/DS-Homebrew/TWiLightMenu) instalado no cartão SD. Pegue o `nsd-bridge-dsi-vX.Y.Z.nds` da [última versão](https://github.com/BC-Estrategias/nsd-bridge/releases/latest), copie pra qualquer lugar que o navegador de arquivos do TWiLight Menu++ alcance (a pasta própria `/nsd-bridge`, criada na primeira execução, funciona) e abra por lá. Não existe instalação por QR code pra homebrew de DS; essa é a única cópia manual que você vai precisar fazer — toda atualização depois disso pode ir direto pelo Wi-Fi: rode `ndev update <ip-do-console>` (baixa o build mais novo do DSi, confere e envia; veja abaixo), e a página web mostra um aviso quando existe versão nova.
 
 ## Três formas de entrar, um só app no console
